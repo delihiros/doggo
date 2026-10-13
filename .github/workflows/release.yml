@@ -52,7 +52,7 @@ jobs:
         env:
           EXPECTED_RELEASE_COMMIT: ${{ needs.source.outputs.commit }}
         run: bash .github/scripts/verify-release-tag.sh
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
       - run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
@@ -72,7 +72,7 @@ jobs:
         env:
           EXPECTED_RELEASE_COMMIT: ${{ needs.source.outputs.commit }}
         run: bash .github/scripts/verify-release-tag.sh
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -110,7 +110,7 @@ jobs:
         env:
           EXPECTED_RELEASE_COMMIT: ${{ needs.source.outputs.commit }}
         run: bash .github/scripts/verify-release-tag.sh
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -158,7 +158,7 @@ jobs:
         env:
           EXPECTED_RELEASE_COMMIT: ${{ needs.source.outputs.commit }}
         run: bash .github/scripts/verify-release-tag.sh
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -197,7 +197,7 @@ jobs:
         env:
           EXPECTED_RELEASE_COMMIT: ${{ needs.source.outputs.commit }}
         run: bash .github/scripts/verify-release-tag.sh
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -263,7 +263,7 @@ jobs:
         env:
           EXPECTED_RELEASE_COMMIT: ${{ needs.source.outputs.commit }}
         run: bash .github/scripts/verify-release-tag.sh
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -315,7 +315,7 @@ jobs:
         env:
           EXPECTED_RELEASE_COMMIT: ${{ needs.source.outputs.commit }}
         run: bash .github/scripts/verify-release-tag.sh
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
