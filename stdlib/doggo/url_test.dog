@@ -1,0 +1,54 @@
+; =====================
+; doggo.url tests
+; =====================
+(ns doggo.url-test
+  (:require [doggo.test :as t]
+    [doggo.url :as url]))
+
+(t/deftest parse-and-format
+  (t/is (= {:scheme "https"
+        :host "[2001:db8::1]"
+        :path "/a%2Fb"
+        :query "x=%25"
+        :fragment "frag ment"}
+      (url/parse "https://[2001:db8::1]/a%2Fb?x=%25#frag%20ment")))
+  (t/is (= {:scheme ""
+        :host ""
+        :path "../a"
+        :query "x=1"
+        :fragment ""}
+      (url/parse "../a?x=1")))
+  (t/is (= "https://example.test/a%2Fb?x=%25#frag%20ment"
+      (url/format {:scheme "https"
+          :host "example.test"
+          :path "/a%2Fb"
+          :query "x=%25"
+          :fragment "frag ment"}))))
+
+(t/deftest resolve-references
+  (t/is (= "https://example.test/c%2Fd?x=%25"
+      (url/resolve "https://example.test/a/b" "../c%2Fd?x=%25")))
+  (t/is (= "https://example.test/a/b?new=2"
+      (url/resolve "https://example.test/a/b?old=1" "?new=2"))))
+
+(t/deftest query-codec
+  (t/is (= "a=x+y&b=2&b=1"
+      (url/encode-query {"b" ["2" "1"] "a" "x y" "empty" []})))
+  (t/is (= {"a" ["x y"] "b" ["2" "1"] "empty" [""]}
+      (url/decode-query "b=2&b=1&a=x+y&empty=")))
+  (t/is (= {"?a" ["1"]}
+      (url/decode-query "?a=1"))))
+
+(t/deftest rejects-invalid-input
+  (t/is (t/thrown-with-msg? #"doggo.url/parse"
+      (url/parse "mailto:user@example.test")))
+  (t/is (t/thrown-with-msg? #"doggo.url/format"
+      (url/format {"path" "/a"})))
+  (t/is (t/thrown-with-msg? #"doggo.url/format"
+      (url/format {:path "//example.test/a"})))
+  (t/is (t/thrown-with-msg? #"doggo.url/resolve"
+      (url/resolve "/relative" "child")))
+  (t/is (t/thrown-with-msg? #"doggo.url/encode-query"
+      (url/encode-query {:a "1"})))
+  (t/is (t/thrown-with-msg? #"doggo.url/decode-query"
+      (url/decode-query "a=%ZZ"))))

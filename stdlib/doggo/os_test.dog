@@ -1,0 +1,37 @@
+; =====================
+; doggo.os tests
+; =====================
+(ns doggo.os-test
+  (:require [doggo.os :as os]
+    [doggo.test :as t]))
+
+(def env-key
+  (str "DOGGO_OS_TEST_" (nano-time)))
+
+(t/deftest os-environment-roundtrip
+  (try
+    (do
+      (os/unsetenv env-key)
+      (t/is (= nil (os/getenv env-key)))
+      (t/is (= nil (os/setenv env-key "ok")))
+      (t/is (= "ok" (os/getenv env-key)))
+      (t/is (= "ok" (get (os/env) env-key)))
+      (t/is (= nil (os/unsetenv env-key)))
+      (t/is (= nil (os/getenv env-key))))
+    (finally
+      (os/unsetenv env-key))))
+
+(t/deftest os-which-returns-nil-for-missing-command
+  (t/is (= nil (os/which "__doggo_missing_command__"))))
+
+(t/deftest os-basic-runtime-information
+  (t/is (string? (os/cwd)))
+  (t/is (> (count (os/cwd)) 0))
+  (t/is (string? (os/user-home)))
+  (t/is (> (count (os/user-home)) 0))
+  (t/is (string? (os/system-temp-dir)))
+  (t/is (> (count (os/system-temp-dir)) 0))
+  (t/is (string? (os/hostname)))
+  (t/is (> (count (os/hostname)) 0))
+  (t/is (string? (os/os-name)))
+  (t/is (> (count (os/os-name)) 0)))

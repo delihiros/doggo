@@ -1,0 +1,65 @@
+; =====================
+; Doggo String Library
+; =====================
+(ns doggo.string)
+
+; Wrappers around core string builtins with a dedicated namespace surface.
+(def ^:private -split (fn [s sep] (split s sep)))
+(def ^:private -join
+  (fn [sep xs]
+    (let [items (vec xs)]
+      (loop [i 0 acc ""]
+        (if (< i (count items))
+          (let [piece (str (nth items i))]
+            (recur (inc i)
+              (if (= i 0)
+                piece
+                (str acc sep piece))))
+          acc)))))
+(def ^:private -trim (fn [s] (trim s)))
+(def ^:private -triml (fn [s] (triml s)))
+(def ^:private -trimr (fn [s] (trimr s)))
+(def ^:private -split-lines (fn [s] (split-lines s)))
+(def ^:private -upper-case (fn [s] (upper-case s)))
+(def ^:private -lower-case (fn [s] (lower-case s)))
+(def ^:private -capitalize (fn [s] (capitalize s)))
+(def ^:private -blank? (fn [s] (blank? s)))
+(def ^:private -starts-with? (fn [s prefix] (starts-with? s prefix)))
+(def ^:private -ends-with? (fn [s suffix] (ends-with? s suffix)))
+(def ^:private -includes? (fn [s needle] (includes? s needle)))
+(def ^:private -index-of (fn [s needle] (index-of s needle)))
+(def ^:private -last-index-of (fn [s needle] (last-index-of s needle)))
+(def ^:private -replace (fn [s match replacement] (replace s match replacement)))
+(def ^:private -replace-first (fn [s match replacement] (replace-first s match replacement)))
+(def ^:private -escape (fn [s cmap] (escape s cmap)))
+(def ^:private -trim-newline
+  (fn [s]
+    (loop [out s]
+      (if (or (ends-with? out "\n")
+          (ends-with? out "\r"))
+        (recur (subs out 0 (dec (count out))))
+        out))))
+(def ^:private -re-quote-replacement
+  (fn [s]
+    (replace (replace s "\\" "\\\\") "$" "\\$")))
+
+(def split -split)
+(def join -join)
+(def trim -trim)
+(def triml -triml)
+(def trimr -trimr)
+(def split-lines -split-lines)
+(def upper-case -upper-case)
+(def lower-case -lower-case)
+(def capitalize -capitalize)
+(def blank? -blank?)
+(def starts-with? -starts-with?)
+(def ends-with? -ends-with?)
+(def includes? -includes?)
+(def index-of -index-of)
+(def last-index-of -last-index-of)
+(def replace -replace)
+(def replace-first -replace-first)
+(def escape -escape)
+(def trim-newline -trim-newline)
+(def re-quote-replacement -re-quote-replacement)

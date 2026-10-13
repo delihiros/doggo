@@ -1,0 +1,6 @@
+# Preserve complete upstream license text byte-for-byte on every platform.
+THIRD_PARTY_NOTICES -text
+editors/vscode/THIRD_PARTY_NOTICES -text
+*.sh text eol=lf
+*.py text eol=lf
+.github/workflows/*.yml text eol=lf

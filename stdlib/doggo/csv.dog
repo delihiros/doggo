@@ -1,0 +1,83 @@
+(ns doggo.csv
+  (:require [doggo.io :as io]))
+
+(def ^:private -read-string csv-read-string*)
+(def ^:private -read csv-read*)
+(def ^:private -write-string csv-write-string*)
+(def ^:private -write csv-write*)
+
+(def ^:private -invalid-argument
+  (fn [fn-name message argument expected actual]
+    (throw (ex-info message
+        {:kind :invalid-argument
+          :function fn-name
+          :argument argument
+          :expected expected
+          :actual actual}))))
+
+(def ^:private -arity-error
+  (fn [fn-name expected actual]
+    (-invalid-argument fn-name
+      (str fn-name ": expected " expected ", got " actual)
+      :arguments expected actual)))
+
+(def ^:private -rethrow-io
+  (fn [fn-name exception]
+    (throw (ex-info
+        (str fn-name ": " (ex-message exception))
+        (assoc (ex-data exception) :function fn-name)
+        exception))))
+
+(def ^:private -validate-read-options
+  (fn [options]
+    (-read [] options)
+    options))
+
+(def ^:private -non-append-target
+  (fn [target]
+    (if (and (map? target)
+        (or (= (:type target) :writer-spec)
+          (= (:type target) :output-stream-spec))
+        (:append target))
+      (-invalid-argument 'doggo.csv/write
+        "doggo.csv/write does not support append targets"
+        :target "path string, doggo.io writer-spec, or doggo.io output-stream-spec"
+        target)
+      target)))
+
+(def ^:private -read-bytes
+  (fn [source]
+    (try
+      (io/slurp source {:binary true})
+      (catch [e]
+        (-rethrow-io 'doggo.csv/read e)))))
+
+(def ^:private -write-text
+  (fn [target text]
+    (try
+      (io/spit (-non-append-target target) text {:binary false :append false})
+      (catch [e]
+        (-rethrow-io 'doggo.csv/write e)))))
+
+(def ^:private -read-public
+  (fn [& args]
+    (let [argc (count args)]
+      (if (or (= argc 1) (= argc 2))
+        (let [options (-validate-read-options
+              (if (= argc 2) (second args) {}))]
+          (-read (-read-bytes (first args)) options))
+        (-arity-error 'doggo.csv/read "1 or 2 arguments" argc)))))
+
+(def ^:private -write-public
+  (fn [& args]
+    (let [argc (count args)]
+      (if (= argc 2)
+        (let [encoded (-write (first args))]
+          (-write-text (second args) encoded)
+          nil)
+        (-arity-error 'doggo.csv/write "2 arguments" argc)))))
+
+(def read-string -read-string)
+(def read -read-public)
+(def write-string -write-string)
+(def write -write-public)

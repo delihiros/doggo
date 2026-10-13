@@ -1,0 +1,170 @@
+; =====================
+; doggo.zip tests
+; =====================
+(ns doggo.zip-test
+  (:require [doggo.test :as t]
+    [doggo.xml :as xml]
+    [doggo.zip :as zip]))
+
+(def collect-nodes
+  (fn [loc]
+    (loop [current loc
+        acc []]
+      (if (zip/end? current)
+        (conj acc (zip/node current))
+        (recur (zip/next current)
+          (conj acc (zip/node current)))))))
+
+(t/deftest vector-zip-navigates-and-rebuilds-root
+  (let [root [1 [2 3] 4]
+      loc (-> root zip/vector-zip zip/down zip/right)]
+    (t/is (= [2 3] (zip/node loc)))
+    (t/is (= true (zip/branch? loc)))
+    (t/is (= '(2 3) (zip/children loc)))
+    (t/is (= 2 (zip/node (zip/down loc))))
+    (t/is (= 3 (zip/node (-> loc zip/down zip/right))))
+    (t/is (= 2 (zip/node (-> loc zip/down zip/right zip/left))))
+    (t/is (= root (zip/root loc)))))
+
+(t/deftest vector-zip-exposes-sibling-and-path-helpers
+  (let [root [1 [2 3] 4]
+      loc (-> root zip/vector-zip zip/down zip/right)
+      nested (-> loc zip/down zip/right)]
+    (t/is (= 1 (zip/node (zip/leftmost loc))))
+    (t/is (= 4 (zip/node (zip/rightmost loc))))
+    (t/is (= '(1) (zip/lefts loc)))
+    (t/is (= '(4) (zip/rights loc)))
+    (t/is (= [root] (zip/path loc)))
+    (t/is (= [root [2 3]] (zip/path nested)))
+    (t/is (= nil (zip/lefts (zip/vector-zip root))))
+    (t/is (= nil (zip/rights (zip/vector-zip root))))
+    (t/is (= nil (zip/path (zip/vector-zip root))))))
+
+(t/deftest vector-zip-supports-editing-operations
+  (let [root [1 [2 3] 4]
+      target (-> root zip/vector-zip zip/down zip/right zip/down zip/right)]
+    (t/is (= [1 [2 99] 4]
+        (-> target
+          (zip/replace 99)
+          zip/root)))
+    (t/is (= [1 [2 8 3] 4]
+        (-> target
+          (zip/insert-left 8)
+          zip/root)))
+    (t/is (= [1 [2 3 9] 4]
+        (-> target
+          (zip/insert-right 9)
+          zip/root)))
+    (t/is (= [1 [2 3 7] 4]
+        (-> root
+          zip/vector-zip
+          zip/down
+          zip/right
+          (zip/append-child 7)
+          zip/root)))
+    (t/is (= [1 [2] 4]
+        (-> target
+          zip/remove
+          zip/root)))
+    (t/is (= 2
+        (-> target
+          zip/remove
+          zip/node)))
+    (t/is (= [1 [2 30] 4]
+        (-> target
+          (zip/edit (fn [x] (* x 10)))
+          zip/root)))))
+
+(t/deftest next-prev-and-end-follow-depth-first-order
+  (let [loc (zip/vector-zip [1 [2 3] 4])]
+    (t/is (= [[1 [2 3] 4] 1 [2 3] 2 3 4 [1 [2 3] 4]]
+        (collect-nodes loc)))
+    (t/is (= true
+        (-> loc zip/next zip/next zip/next zip/next zip/next zip/next zip/end?)))
+    (t/is (= 2
+        (-> loc zip/next zip/next zip/next zip/next zip/prev zip/node)))))
+
+(t/deftest seq-zip-preserves-list-shape
+  (let [root (with-meta '(1 (2 3) 4) {:tag :seqroot})
+      untouched (-> root
+        zip/seq-zip
+        zip/down
+        zip/right
+        zip/root)
+      edited (-> root
+        zip/seq-zip
+        zip/down
+        zip/right
+        zip/down
+        zip/right
+        (zip/replace 99)
+        zip/root)]
+    (t/is (= "(1 (2 3) 4)" (pr-str untouched)))
+    (t/is (= true (list? untouched)))
+    (t/is (= {:tag :seqroot} (meta untouched)))
+    (t/is (= "(1 (2 99) 4)" (pr-str edited)))
+    (t/is (= true (seq? edited)))
+    (t/is (= {:tag :seqroot} (meta edited)))))
+
+(t/deftest children-rejects-leaf-locations
+  (t/is (t/thrown-with-msg?
+      #"called children on a leaf node"
+      (zip/children (-> [1 [2 3] 4] zip/vector-zip zip/down)))))
+
+(t/deftest generic-zipper-uses-custom-branch-and-make-node
+  (let [tree {:value :root
+        :children [{:value :a :children []}
+          {:value :b :children [{:value :c :children []}]}]}
+      loc (zip/zipper
+        (fn [node]
+          (and (map? node)
+            (contains? node :children)
+            (not (empty? (:children node)))))
+        (fn [node] (:children node))
+        (fn [node children]
+          (assoc node :children (vec children)))
+        tree)
+      target (-> loc zip/down zip/right zip/down)]
+    (t/is (= :c (:value (zip/node target))))
+    (t/is (= :z (:value (-> target
+            (zip/replace {:value :z :children []})
+            zip/root
+            :children
+            second
+            :children
+            first))))
+    (t/is (= :y (:value (-> loc
+            zip/down
+            (zip/insert-right {:value :y :children []})
+            zip/root
+            :children
+            second))))))
+
+(t/deftest xml-zip-navigates-and-rebuilds-xml-trees
+  (let [root (with-meta
+        (xml/read-string "<root a=\"1\"><child>txt</child><nested><leaf/></nested></root>")
+        {:source :xml})
+      loc (zip/xml-zip root)
+      child-loc (zip/down loc)
+      nested-loc (zip/right child-loc)
+      leaf-loc (zip/down nested-loc)]
+    (t/is (= :root (xml/tag (zip/node loc))))
+    (t/is (= :child (xml/tag (zip/node child-loc))))
+    (t/is (= ["txt"] (xml/content (zip/node child-loc))))
+    (t/is (= :nested (xml/tag (zip/node nested-loc))))
+    (t/is (= :leaf (xml/tag (zip/node leaf-loc))))
+    (t/is (= {:source :xml} (meta (zip/root leaf-loc))))
+    (t/is (= {:tag :root
+          :attrs {:a "1"}
+          :content [{:tag :child
+              :attrs nil
+              :content ["updated"]}
+            {:tag :nested
+              :attrs nil
+              :content [{:tag :leaf
+                  :attrs nil
+                  :content nil}]}]}
+        (-> child-loc
+          zip/down
+          (zip/replace "updated")
+          zip/root)))))

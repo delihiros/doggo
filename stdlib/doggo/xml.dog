@@ -1,0 +1,75 @@
+; =====================
+; Doggo XML Library
+; =====================
+(ns doggo.xml
+  (:require [doggo.io :as io]))
+
+(def ^:private -read-string xml-parse-string*)
+(def ^:private -write-string xml-emit-string*)
+
+(def ^:private -invalid-argument
+  (fn [fn-name message argument actual]
+    (throw (ex-info message
+        {:kind :invalid-argument
+          :function fn-name
+          :argument argument
+          :actual actual}))))
+
+(def ^:private -rethrow-io
+  (fn [fn-name exception]
+    (throw (ex-info
+        (str fn-name ": " (ex-message exception))
+        (assoc (ex-data exception) :function fn-name)
+        exception))))
+
+(def ^:private -read-source
+  (fn [source]
+    (try
+      (io/slurp source {:binary false})
+      (catch [e]
+        (-rethrow-io 'doggo.xml/read e)))))
+
+(def ^:private -non-append-target
+  (fn [target]
+    (if (and (map? target)
+        (or (= (:type target) :writer-spec)
+          (= (:type target) :output-stream-spec))
+        (:append target))
+      (-invalid-argument 'doggo.xml/write
+        "doggo.xml/write does not support append targets"
+        :target target)
+      target)))
+
+(def read-string
+  (fn [text]
+    (-read-string text)))
+
+(def read
+  (fn [source]
+    (-read-string (-read-source source))))
+
+(def write-string
+  (fn [node]
+    (-write-string node)))
+
+(def write
+  (fn [node target]
+    (try
+      (io/spit (-non-append-target target)
+        (-write-string node)
+        {:binary false :append false})
+      (catch [e]
+        (-rethrow-io 'doggo.xml/write e)))
+    nil))
+
+(def tag
+  (fn [node]
+    (:tag node)))
+
+(def attrs
+  (fn [node]
+    (:attrs node)))
+
+(def content
+  (fn [node]
+    (:content node)))

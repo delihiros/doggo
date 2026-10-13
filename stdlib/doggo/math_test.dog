@@ -1,0 +1,103 @@
+; =====================
+; doggo.math tests
+; =====================
+(ns doggo.math-test
+  (:require [doggo.edn :as edn]
+    [doggo.math :as math]
+    [doggo.test :as t]))
+
+(def approx?
+  (fn [expected actual]
+    (< (math/abs (- expected actual)) 0.000000001)))
+
+(t/deftest math-constants
+  (t/is (approx? 3.141592653589793 math/PI))
+  (t/is (approx? 2.718281828459045 math/E)))
+
+(t/deftest math-basic-functions
+  (t/is (= 3.0 (math/sqrt 9)))
+  (t/is (= 1024.0 (math/pow 2 10)))
+  (t/is (approx? math/E (math/exp 1)))
+  (t/is (= 1.0 (math/log math/E)))
+  (t/is (= 3.0 (math/log10 1000))))
+
+(t/deftest math-trigonometry
+  (t/is (= 0.0 (math/sin 0)))
+  (t/is (= 1.0 (math/cos 0)))
+  (t/is (= 0.0 (math/tan 0)))
+  (t/is (approx? 1.5707963267948966 (math/asin 1)))
+  (t/is (= 0.0 (math/acos 1)))
+  (t/is (approx? 0.7853981633974483 (math/atan 1))))
+
+(t/deftest math-extra-functions
+  (t/is (approx? 0.7853981633974483 (math/atan2 1 1)))
+  (t/is (approx? 3.141592653589793 (math/atan2 0 -1)))
+  (t/is (= 5.0 (math/hypot 3 4)))
+  (t/is (approx? 1.1752011936438014 (math/sinh 1)))
+  (t/is (approx? 1.543080634815244 (math/cosh 1)))
+  (t/is (approx? 0.7615941559557649 (math/tanh 1)))
+  (t/is (= 3.0 (math/cbrt 27)))
+  (t/is (approx? 1.718281828459045 (math/expm1 1)))
+  (t/is (approx? 0.6931471805599453 (math/log1p 1)))
+  (t/is (= -2.5 (math/copy-sign 2.5 -1)))
+  (t/is (approx? 1.0000000000000002 (math/next-after 1 2)))
+  (t/is (approx? 1.0000000000000002 (math/next-up 1)))
+  (t/is (approx? 0.9999999999999999 (math/next-down 1)))
+  (t/is (approx? 0.0000000000000002220446049250313 (math/ulp 1)))
+  (t/is (= 2.0 (math/rint 1.5)))
+  (t/is (= 2.0 (math/rint 2.5)))
+  (t/is (= 3 (math/get-exponent 8.0)))
+  (t/is (= 6.0 (math/scalb 1.5 2)))
+  (t/is (approx? 180.0 (math/to-degrees math/PI)))
+  (t/is (approx? math/PI (math/to-radians 180))))
+
+(t/deftest math-rounding-and-sign
+  (t/is (= 1.0 (math/floor 1.9)))
+  (t/is (= 2.0 (math/ceil 1.1)))
+  (t/is (= 2 (math/round 1.6)))
+  (t/is (= 1 (math/round 1.4)))
+  (t/is (= 3 (math/abs -3)))
+  (t/is (= 3 (math/abs (first (range -3 0)))))
+  (t/is (int? (math/abs (first (range -3 0)))))
+  (t/is (= -1.0 (math/signum -2.5)))
+  (t/is (= 0.0 (math/signum 0)))
+  (t/is (= 1.0 (math/signum 8)))
+  (t/is (re-find #"integer overflow"
+      (try
+        (math/abs -9223372036854775808)
+        ""
+        (catch [e] (str e))))))
+
+(t/deftest math-round-handles-non-finite-values-like-clojure
+  (t/is (= 0 (math/round (math/sqrt -1))))
+  (t/is (= 9223372036854775807 (math/round (math/exp 10000))))
+  (t/is (= -9223372036854775808 (math/round (math/log 0)))))
+
+(t/deftest math-ulp-and-scalb-match-clojure-edge-cases
+  (t/is (= 4.9E-324 (math/ulp 0.0)))
+  (t/is (= 4.9E-324 (math/ulp 5e-324)))
+  (t/is (= 4.9E-324 (math/ulp 1e-323)))
+  (t/is (= 4.9E-324 (math/ulp -2e-323)))
+  (t/is (= 1.9958403095347198E292 (math/ulp 1.7976931348623157E308)))
+  (t/is (= 1.9958403095347198E292 (math/ulp -1.7976931348623157E308)))
+  (t/is (= 1.5 (math/scalb 1.5 (math/sqrt -1))))
+  (t/is (re-find #"Value out of range for long: Infinity"
+      (try
+        (math/scalb 1.5 (edn/read-string "##Inf"))
+        ""
+        (catch [e] (str e)))))
+  (t/is (re-find #"integer overflow"
+      (try
+        (math/scalb 1.5 2147483648.0)
+        ""
+        (catch [e] (str e)))))
+  (t/is (re-find #"integer overflow"
+      (try
+        (math/scalb 1.5 -2147483649.0)
+        ""
+        (catch [e] (str e)))))
+  (t/is (re-find #"Value out of range for long: 1e\+20"
+      (try
+        (math/scalb 1.5 1.0E20)
+        ""
+        (catch [e] (str e))))))

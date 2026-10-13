@@ -1,0 +1,199 @@
+; =====================
+; Doggo Process Library
+; =====================
+(ns doggo.process
+  (:require [doggo.io :as io]))
+
+(def stdout
+  (fn [process]
+    (process-stdout* process)))
+
+(def stderr
+  (fn [process]
+    (process-stderr* process)))
+
+(def stdin
+  (fn [process]
+    (process-stdin* process)))
+
+(def write-stdin
+  (fn [process content]
+    (process-stdin-write* process content)))
+
+(def close-stdin
+  (fn [process]
+    (process-stdin-close* process)))
+
+(def exit-ref
+  (fn [process]
+    (process-exit-ref* process)))
+
+(def exited?
+  (fn [process]
+    (process-exited?* process)))
+
+(def exit-value
+  (fn [process]
+    (process-exit-value* process)))
+
+(def wait-for
+  (fn [process timeout]
+    (process-wait-for* process timeout)))
+
+(def process-tree-supported?
+  (fn []
+    (process-tree-supported?*)))
+
+(def alive?
+  (fn [process]
+    (process-alive?* process)))
+
+(def kill-tree
+  (fn [process]
+    (process-kill-tree* process)))
+
+(def ^:private -options-map
+  (fn [fn-name options allowed boolean-keys]
+    (if (not (map? options))
+      (throw (ex-info (str fn-name ": expected final option map")
+          {:kind :invalid-argument
+            :function fn-name
+            :argument :options
+            :expected "map"
+            :actual options}))
+      (do
+        (doseq [key (keys options)]
+          (if (contains? allowed key)
+            nil
+            (throw (ex-info (str fn-name ": unsupported option " key)
+                {:kind :invalid-argument
+                  :function fn-name
+                  :argument :options
+                  :actual key}))))
+        (doseq [key boolean-keys]
+          (if (and (contains? options key)
+              (not (boolean? (get options key))))
+            (throw (ex-info (str fn-name ": option " key " must be boolean")
+                {:kind :invalid-argument
+                  :function fn-name
+                  :argument key
+                  :expected "boolean"
+                  :actual (get options key)}))
+            nil))
+        options))))
+
+(def ^:private -option-bool
+  (fn [options key default]
+    (if (contains? options key)
+      (get options key)
+      default)))
+
+(def output-file-spec
+  (fn
+    ([path] (output-file-spec path {}))
+    ([path option-map]
+      (let [options (-options-map 'doggo.process/output-file-spec option-map
+            #{:append} #{:append})]
+        {:type :output-stream-spec
+          :path (io/normalize path)
+          :append (-option-bool options :append false)
+          :binary true}))))
+
+(def input-file-spec
+  (fn [path]
+    {:type :input-stream-spec
+      :path (io/normalize path)
+      :binary true}))
+
+(def ^:private -split-command-options
+  (fn [fn-name args allowed boolean-keys]
+    (loop [command [] remaining args]
+      (cond
+        (empty? remaining)
+        (if (empty? command)
+          (throw (ex-info (str fn-name ": requires at least one command string")
+              {:kind :invalid-argument
+                :function fn-name
+                :argument :command}))
+          [command {}])
+
+        (string? (first remaining))
+        (recur (conj command (first remaining)) (rest remaining))
+
+        (and (seq command)
+          (= 1 (count remaining))
+          (map? (first remaining)))
+        [command (-options-map fn-name (first remaining) allowed boolean-keys)]
+
+        (and (seq command)
+          (= 1 (count remaining)))
+        (throw (ex-info (str fn-name ": expected final option map")
+            {:kind :invalid-argument
+              :function fn-name
+              :argument :options
+              :expected "map"
+              :actual (first remaining)}))
+
+        :else
+        (throw (ex-info
+            (str fn-name ": command strings must precede one final option map")
+            {:kind :invalid-argument
+              :function fn-name
+              :argument :command
+              :actual args}))))))
+
+(def run
+  (fn [& args]
+    (let [[command options] (-split-command-options 'doggo.process/run args
+          #{:dir :in :env :timeout} #{})]
+      (apply process-run* (concat command [options])))))
+
+(def ^:private -start-process
+  (fn [fn-name command options]
+    (try
+      (apply process-start* options command)
+      (catch [e]
+        (let [data (ex-data e)]
+          (if (and (map? data) (contains? data :kind))
+            (throw (ex-info (ex-message e)
+                (assoc data :function fn-name)
+                e))
+            (throw e)))))))
+
+(def start
+  (fn [& args]
+    (let [[command options] (-split-command-options 'doggo.process/start args
+          #{:dir :env :clear-env :timeout :in :out :err} #{:clear-env})]
+      (-start-process 'doggo.process/start command options))))
+
+(def ^:private -check-output-options
+  (fn [opts]
+    (if (nil? opts)
+      {:err :inherit}
+      (if (contains? opts :err)
+        opts
+        (assoc opts :err :inherit)))))
+
+(def check-output
+  (fn [& args]
+    (let [[command opts] (-split-command-options 'doggo.process/check-output args
+          #{:dir :env :clear-env :timeout :in :out :err} #{:clear-env})
+        check-output-opts (-check-output-options opts)
+        process (-start-process 'doggo.process/check-output command check-output-opts)
+        out-mode (if (contains? check-output-opts :out) (get check-output-opts :out) :pipe)
+        err-mode (get check-output-opts :err)
+        out-future (if (= out-mode :pipe)
+          (future (io/slurp (stdout process)))
+          nil)
+        err-future (if (= err-mode :pipe)
+          (future (io/slurp (stderr process)))
+          nil)
+        exit @(exit-ref process)
+        out-value (if (nil? out-future) nil @out-future)
+        _ (if (nil? err-future) nil @err-future)]
+      (if (= 0 exit)
+        out-value
+        (throw (ex-info (str "Process failed with exit=" exit)
+            {:kind :process-failure
+              :function 'doggo.process/check-output
+              :exit exit}))))))

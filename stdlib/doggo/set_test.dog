@@ -1,0 +1,38 @@
+; =====================
+; doggo.set tests
+; =====================
+(ns doggo.set-test
+  (:require [doggo.set :as dset]
+    [doggo.test :as t]))
+
+(def employees
+  #{{:id 1 :dept "eng" :name "Ada"}
+    {:id 2 :dept "eng" :name "Bob"}
+    {:id 3 :dept "sales" :name "Cid"}})
+
+(t/deftest set-relational-operations
+  (t/is (= #{2 4} (dset/select even? #{1 2 3 4})))
+  (t/is (= #{{:id 1} {:id 2} {:id 3}}
+      (dset/project employees [:id])))
+  (t/is (= {:employee/id 1 :name "Ada"}
+      (dset/rename-keys {:id 1 :name "Ada"} {:id :employee/id})))
+  (t/is (= #{{:employee/id 1 :name "Ada"} {:employee/id 2 :name "Bob"}}
+      (dset/rename #{{:id 1 :name "Ada"} {:id 2 :name "Bob"}}
+        {:id :employee/id})))
+  (t/is (= {1 :a 2 :b}
+      (dset/map-invert {:a 1 :b 2})))
+  (t/is (= {{:dept "eng"} #{{:id 1 :dept "eng"} {:id 2 :dept "eng"}}
+        {:dept "sales"} #{{:id 3 :dept "sales"}}}
+      (dset/index #{{:id 1 :dept "eng"} {:id 2 :dept "eng"} {:id 3 :dept "sales"}}
+        [:dept])))
+  (t/is (= #{{:id 1 :dept "eng" :name "Ada" :country "JP"}
+        {:id 2 :dept "eng" :name "Bob" :country "JP"}
+        {:id 3 :dept "sales" :name "Cid" :country "US"}}
+      (dset/join employees
+        #{{:dept "eng" :country "JP"}
+          {:dept "sales" :country "US"}})))
+  (t/is (= #{{:person-id 1 :name "Ada" :id 1 :city "Tokyo"}
+        {:person-id 2 :name "Bob" :id 2 :city "Osaka"}}
+      (dset/join #{{:person-id 1 :name "Ada"} {:person-id 2 :name "Bob"}}
+        #{{:id 1 :city "Tokyo"} {:id 2 :city "Osaka"}}
+        {:person-id :id}))))

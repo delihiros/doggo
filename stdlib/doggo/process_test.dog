@@ -1,0 +1,310 @@
+; =====================
+; doggo.process tests
+; =====================
+(ns doggo.process-test
+  (:require [doggo.io :as io]
+    [doggo.os :as os]
+    [doggo.process :as proc]
+    [doggo.string :as str]
+    [doggo.time :as time]
+    [doggo.test :as t]))
+
+(def process-test-dir
+  (io/join-path
+    (if (= "windows" (os/os-name))
+      (proc/check-output (os/which "powershell.exe") "-NoLogo" "-NoProfile" "-NonInteractive" "-Command"
+        "[Console]::Out.Write(([IO.DirectoryInfo]::new([IO.Path]::GetTempPath())).FullName)")
+      (os/system-temp-dir))
+    (str "doggo-process-test-" (nano-time))))
+
+(def windows? (= "windows" (os/os-name)))
+
+; Use each platform's native shell with equivalent fixtures. Windows process
+; tests must exercise job objects without requiring Git Bash or WSL.
+(def windows-scripts
+  {"printf hi; printf err >&2" "[Console]::Out.Write('hi'); [Console]::Error.Write('err')"
+    "pwd" "[Console]::Out.Write((Get-Location).Path)"
+    "printf \"$DOGGO_PROCESS_TEST\"" "[Console]::Out.Write($env:DOGGO_PROCESS_TEST)"
+    "printf \"$VAR\"" "[Console]::Out.Write($env:VAR)"
+    "cat" "[Console]::Out.Write([Console]::In.ReadToEnd())"
+    "cat; printf \"$DOGGO_ONLY\" >&2" "[Console]::Out.Write([Console]::In.ReadToEnd()); [Console]::Error.Write($env:DOGGO_ONLY)"
+    "printf nope >&2; exit 7" "[Console]::Error.Write('nope'); exit 7"
+    "sleep 1; printf late" "Start-Sleep -Seconds 1; [Console]::Out.Write('late')"
+    "printf hi" "[Console]::Out.Write('hi')"
+    "printf out; printf err >&2" "[Console]::Out.Write('out'); [Console]::Error.Write('err')"
+    "sleep 0.2; exit 0" "Start-Sleep -Milliseconds 200; exit 0"
+    "sleep 0.2" "Start-Sleep -Milliseconds 200"
+    "exit 0" "exit 0"
+    "exit 7" "exit 7"
+    "printf exec-ok" "[Console]::Out.Write('exec-ok')"
+    "printf kv-start" "[Console]::Out.Write('kv-start')"
+    "printf kv-exec" "[Console]::Out.Write('kv-exec')"})
+
+(def shell-command
+  (fn [script]
+    (if windows?
+      [(os/which "powershell.exe") "-NoLogo" "-NoProfile" "-NonInteractive" "-Command"
+        (get windows-scripts script script)]
+      ["sh" "-lc" script])))
+
+(def shell-run
+  (fn [script & options]
+    (apply proc/run (concat (shell-command script) options))))
+
+(def shell-start
+  (fn [script & options]
+    (apply proc/start (concat (shell-command script) options))))
+
+(def shell-check-output
+  (fn [script & options]
+    (apply proc/check-output (concat (shell-command script) options))))
+
+(def process-stdin-path
+  (io/join-path process-test-dir "stdin.txt"))
+
+(def process-stdout-path
+  (io/join-path process-test-dir "stdout.txt"))
+
+(def process-stderr-path
+  (io/join-path process-test-dir "stderr.txt"))
+
+(t/deftest run-captures-stdout-stderr-and-exit
+  (let [result (shell-run "printf hi; printf err >&2")]
+    (t/is (= 0 (:exit result)))
+    (t/is (= "hi" (:out result)))
+    (t/is (= "err" (:err result)))))
+
+(t/deftest run-supports-working-directory-environment-and-stdin
+  (io/make-parents (io/join-path process-test-dir "marker.txt"))
+  (let [dir-result (shell-run "pwd" {:dir process-test-dir})
+      env-result (shell-run "printf \"$DOGGO_PROCESS_TEST\"" {:env {"DOGGO_PROCESS_TEST" "ok"}})
+      stdin-result (shell-run "cat" {:in "stdin-text"})]
+    (t/is (= process-test-dir (str/trim-newline (:out dir-result))))
+    (t/is (= "ok" (:out env-result)))
+    (t/is (= "stdin-text" (:out stdin-result)))))
+
+(t/deftest run-returns-non-zero-exit-without-throwing
+  (let [result (shell-run "printf nope >&2; exit 7")]
+    (t/is (= 7 (:exit result)))
+    (t/is (= "" (:out result)))
+    (t/is (= "nope" (:err result)))))
+
+(t/deftest run-supports-timeouts
+  (let [result (shell-run "sleep 1; printf late" {:timeout 10})
+      duration-result (shell-run "sleep 1; printf late" {:timeout (time/millis 10)})]
+    (t/is (= 124 (:exit result)))
+    (t/is (= "" (:out result)))
+    (t/is (str/includes? (:err result) "timed out"))
+    (t/is (= 124 (:exit duration-result)))
+    (t/is (= "" (:out duration-result)))
+    (t/is (str/includes? (:err duration-result) "timed out"))))
+
+(t/deftest run-coerces-env-values-to-strings
+  (let [result (shell-run "printf \"$DOGGO_PROCESS_TEST\"" {:env {"DOGGO_PROCESS_TEST" 123}})]
+    (t/is (= 0 (:exit result)))
+    (t/is (= "123" (:out result)))
+    (t/is (= "" (:err result)))))
+
+(t/deftest run-coerces-env-keys-from-named-values
+  (let [keyword-result (shell-run "printf \"$DOGGO_PROCESS_TEST\"" {:env {:DOGGO_PROCESS_TEST 123}})
+      symbol-result (shell-run "printf \"$DOGGO_PROCESS_TEST\"" {:env {'DOGGO_PROCESS_TEST 456}})]
+    (t/is (= 0 (:exit keyword-result)))
+    (t/is (= "123" (:out keyword-result)))
+    (t/is (= 0 (:exit symbol-result)))
+    (t/is (= "456" (:out symbol-result)))))
+
+(t/deftest run-coerces-env-keys-using-name-semantics
+  (let [keyword-result (shell-run "printf \"$VAR\"" {:env {:ns/VAR 123}})
+      symbol-result (shell-run "printf \"$VAR\"" {:env {'ns/VAR 456}})]
+    (t/is (= 0 (:exit keyword-result)))
+    (t/is (= "123" (:out keyword-result)))
+    (t/is (= 0 (:exit symbol-result)))
+    (t/is (= "456" (:out symbol-result)))))
+
+(t/deftest run-rejects-invalid-timeout-options
+  (t/is (t/thrown-with-msg?
+      #"process-run\*: option timeout must be a number or duration map"
+      (shell-run "printf hi" {:timeout :bad})))
+  (t/is (t/thrown-with-msg?
+      #"process-run\*: option timeout must be non-negative"
+      (shell-run "printf hi" {:timeout -0.1})))
+  (t/is (t/thrown-with-msg?
+      #"process-run\*: option timeout must be non-negative"
+      (shell-run "printf hi" {:timeout -1})))
+  (t/is (t/thrown-with-msg?
+      #"process-run\*: option timeout must be no greater than"
+      (shell-run "printf hi" {:timeout 9223372036855})))
+  (t/is (t/thrown-with-msg?
+      #"process-run\*: option timeout must be non-negative"
+      (shell-run "printf hi" {:timeout (time/millis -0.1)})))
+  (t/is (t/thrown-with-msg?
+      #"process-run\*: option timeout must be a number or duration map"
+      (shell-run "printf hi" {:timeout {:seconds 1}}))))
+
+(t/deftest start-exposes-handle-streams-and-exit-ref
+  (let [proc-handle (shell-start "printf out; printf err >&2")
+      out (future (io/slurp (proc/stdout proc-handle)))
+      err (future (io/slurp (proc/stderr proc-handle)))
+      exit @(proc/exit-ref proc-handle)]
+    (t/is (= 0 exit))
+    (t/is (= "out" @out))
+    (t/is (= "err" @err))))
+
+(t/deftest output-descriptors-are-consumed-once
+  (let [proc-handle (shell-start "printf out; printf err >&2")
+      out (proc/stdout proc-handle)
+      err (proc/stderr proc-handle)]
+    (t/is (= "out" (io/slurp out)))
+    (t/is (= "err" (io/slurp err)))
+    (t/is (t/thrown-with-msg?
+        #"stream closed"
+        (io/slurp out)))
+    (t/is (t/thrown-with-msg?
+        #"stream closed"
+        (io/slurp err)))
+    (t/is (= 0 @(proc/exit-ref proc-handle)))))
+
+(t/deftest start-exposes-polling-helpers
+  (let [running (shell-start "sleep 0.2; exit 0")
+      timeout-result (proc/wait-for running 1)
+      alive-after-timeout (proc/alive? running)
+      running-exit (proc/wait-for running 1000)]
+    (t/is (= nil timeout-result))
+    (t/is (= true alive-after-timeout))
+    (t/is (= 0 running-exit))
+    (t/is (= false (proc/alive? running)))
+    (t/is (= true (proc/exited? running)))
+    (t/is (= 0 (proc/exit-value running)))
+    (t/is (= 0 @(proc/exit-ref running)))))
+
+(t/deftest wait-for-returns-completed-exit-values
+  (let [ok (shell-start "exit 0")
+      failed (shell-start "exit 7")
+      ok-exit (proc/wait-for ok (time/millis 1000))
+      failed-exit (proc/wait-for failed 1000)]
+    (t/is (= 0 ok-exit))
+    (t/is (= true (proc/exited? ok)))
+    (t/is (= 0 (proc/exit-value ok)))
+    (t/is (= 0 @(proc/exit-ref ok)))
+    (t/is (= 7 failed-exit))
+    (t/is (= true (proc/exited? failed)))
+    (t/is (= 7 (proc/exit-value failed)))
+    (t/is (= 7 @(proc/exit-ref failed)))))
+
+(t/deftest wait-for-rejects-invalid-timeouts
+  (let [p (shell-start "exit 0")]
+    (t/is (t/thrown-with-msg?
+        #"process-wait-for\*: option timeout must be a number or duration map"
+        (proc/wait-for p :bad)))
+    (t/is (= 0 @(proc/exit-ref p)))))
+
+(t/deftest start-exposes-alive-and-kill
+  (let [proc-handle (shell-start "sleep 0.2")
+      tree-supported? (proc/process-tree-supported?)
+      alive-before (proc/alive? proc-handle)]
+    (t/is (= true alive-before))
+    (if tree-supported?
+      (let [kill-exit (proc/kill-tree proc-handle)
+          alive-after (proc/alive? proc-handle)]
+        (t/is (not= 0 kill-exit))
+        (t/is (= false alive-after))
+        (t/is (= kill-exit @(proc/exit-ref proc-handle)))
+        (t/is (= kill-exit (proc/kill-tree proc-handle))))
+      (do
+        (t/is (t/thrown-with-msg?
+            #"process-tree management is unsupported"
+            (proc/kill-tree proc-handle)))
+        (t/is (= 0 @(proc/exit-ref proc-handle)))
+        (t/is (= false (proc/alive? proc-handle)))))))
+
+(t/deftest kill-tree-stops-background-child-processes
+  (if (proc/process-tree-supported?)
+    (let [marker-path (io/join-path process-test-dir "killed-child.txt")
+        ready-path (io/join-path process-test-dir "child-ready.txt")
+        _ (io/make-parents ready-path)
+        proc-handle (shell-start
+          (if windows?
+            (str "$script = \"[IO.File]::WriteAllText('"
+              (str/replace ready-path "'" "''")
+              "', 'ready'); Start-Sleep -Milliseconds 500; [IO.File]::WriteAllText('"
+              (str/replace marker-path "'" "''")
+              "', 'orphan')\"; $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script)); $start = New-Object Diagnostics.ProcessStartInfo; $start.FileName = (Get-Process -Id $PID).Path; $start.Arguments = '-NoLogo -NoProfile -NonInteractive -EncodedCommand ' + $encoded; $start.UseShellExecute = $false; $start.CreateNoWindow = $true; $child = [Diagnostics.Process]::Start($start); Start-Sleep -Seconds 5")
+            (str "sh -lc 'printf ready > \"" ready-path "\"; sleep 0.5; printf orphan > "
+              "\"" marker-path "\""
+              "' & sleep 5")))]
+      (loop [attempt 0]
+        (if (or (io/exists? ready-path) (= attempt 500))
+          nil
+          (do (time/sleep 10) (recur (inc attempt)))))
+      (t/is (io/exists? ready-path))
+      (t/is (not= 0 (proc/kill-tree proc-handle)))
+      (time/sleep 600)
+      (t/is (= false (io/exists? marker-path))))
+    (let [proc-handle (shell-start "sleep 0.2")]
+      (t/is (t/thrown-with-msg?
+          #"process-tree management is unsupported"
+          (proc/kill-tree proc-handle)))
+      (t/is (= 0 @(proc/exit-ref proc-handle))))))
+
+(t/deftest start-supports-stdin-file-redirects-and-check-output
+  (io/make-parents process-stdin-path)
+  (io/spit process-stdin-path "file-input")
+  (let [pipe-proc (shell-start "cat")
+      pipe-out (future (io/slurp (proc/stdout pipe-proc)))
+      file-proc (shell-start "cat; printf \"$DOGGO_ONLY\" >&2"
+        {:in (proc/input-file-spec process-stdin-path)
+          :out (proc/output-file-spec process-stdout-path)
+          :err (proc/output-file-spec process-stderr-path)
+          :clear-env true
+          :env {"DOGGO_ONLY" "ok"}})]
+    (io/spit (proc/stdin pipe-proc) "pipe-input")
+    (t/is (= 0 @(proc/exit-ref pipe-proc)))
+    (t/is (= "pipe-input" @pipe-out))
+    (t/is (= 0 @(proc/exit-ref file-proc)))
+    (t/is (= "file-input" (io/slurp process-stdout-path)))
+    (t/is (= "ok" (io/slurp process-stderr-path)))
+    (t/is (= "exec-ok" (shell-check-output "printf exec-ok")))
+    (t/is (t/thrown-with-msg?
+        #"Process failed with exit=7"
+        (shell-check-output "printf nope >&2; exit 7")))))
+
+(t/deftest start-and-check-output-accept-final-option-maps
+  (io/make-parents process-stdout-path)
+  (let [start-proc (shell-start "printf kv-start"
+        {:out (proc/output-file-spec process-stdout-path)})
+      start-exit @(proc/exit-ref start-proc)]
+    (t/is (= 0 start-exit))
+    (t/is (= "kv-start" (io/slurp process-stdout-path))))
+  (t/is (= nil
+      (shell-check-output "printf kv-exec"
+        {:out (proc/output-file-spec process-stdout-path)})))
+  (t/is (= "kv-exec" (io/slurp process-stdout-path))))
+
+(t/deftest start-and-check-output-support-string-input-and-timeout
+  (let [string-proc (shell-start "cat" {:in "start-input"})
+      string-out (future (io/slurp (proc/stdout string-proc)))
+      timeout-proc (shell-start "sleep 1; printf late" {:timeout 10})]
+    (t/is (= 0 @(proc/exit-ref string-proc)))
+    (t/is (= "start-input" @string-out))
+    (t/is (= "exec-input" (shell-check-output "cat" {:in "exec-input"})))
+    (t/is (= 124 @(proc/exit-ref timeout-proc)))
+    (t/is (t/thrown-with-msg?
+        #"Process failed with exit=124"
+        (shell-check-output "sleep 1; printf late" {:timeout 10})))))
+
+(t/deftest stdin-descriptor-spit-closes-after-write
+  (let [pipe-proc (shell-start "cat")
+      pipe-out (future (io/slurp (proc/stdout pipe-proc)))]
+    (io/spit (proc/stdin pipe-proc) "descriptor-input")
+    (t/is (= 0 @(proc/exit-ref pipe-proc)))
+    (t/is (= "descriptor-input" @pipe-out))))
+
+(t/deftest write-stdin-supports-multiple-writes-before-explicit-close
+  (let [pipe-proc (shell-start "cat")
+      pipe-out (future (io/slurp (proc/stdout pipe-proc)))]
+    (proc/write-stdin pipe-proc "a")
+    (proc/write-stdin pipe-proc "b")
+    (proc/close-stdin pipe-proc)
+    (proc/close-stdin pipe-proc)
+    (t/is (= 0 @(proc/exit-ref pipe-proc)))
+    (t/is (= "ab" @pipe-out))))

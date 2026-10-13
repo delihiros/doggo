@@ -1,0 +1,63 @@
+; Agent Ring Benchmark
+; Clojure の agent ring テストの doggo 移植版
+; m 個の Agent チェーンを作成し、n 個のメッセージを送信する
+
+;; ヘルパー関数
+(defn zero? [n]
+  "数値がゼロかどうかを判定"
+  (= n 0))
+
+;; relay 関数: メッセージを Agent チェーンに沿って転送する
+;; x: Agent の状態 (マップ)
+;; i: メッセージカウンタ
+(defn relay [x i]
+  ; 次の Agent があれば転送
+  (when (:next x)
+    (send (:next x) relay i))
+  ; カウンタが 0 で完了チャネルがあれば通知
+  (when (and (zero? i) (:done-ch x))
+    (>! (:done-ch x) i))
+  ; 状態は変更しない
+  x)
+
+;; run 関数: Agent チェーンを作成してメッセージを送信
+;; m: Agent の数
+;; n: メッセージの数
+(defn run [m n]
+  (let [done-ch (chan)
+      ; Agent チェーンを作成: head -> ... -> tail (tail は done-ch を持つ)
+      tail (agent {:done-ch done-ch})
+      ; loop/recur でチェーンを構築（各 agent の recur スタックは独立）
+      hd (loop [next tail
+          count (dec m)]
+        (if (<= count 0)
+          next
+          (recur (agent {:next next}) (dec count))))]
+    ; メッセージを送信 (n-1, n-2, ..., 1, 0)
+    (loop [i (dec n)]
+      (when (>= i 0)
+        (send hd relay i)
+        (recur (dec i))))
+    ; 完了を待機
+    (<! done-ch)))
+
+;; メイン実行
+(println "=== Agent Ring Benchmark ===")
+(println "")
+
+; 小規模テスト: 10 agents x 10 messages = 100 message sends
+(println "Small test: 10 agents x 10 messages")
+(println "Result:" (run 10 10))
+(println "")
+
+; 中規模テスト: 100 agents x 100 messages = 10,000 message sends
+(println "Medium test: 100 agents x 100 messages")
+(println "Result:" (run 100 100))
+(println "")
+
+; 大規模テスト: 1000 agents x 100 messages = 100,000 message sends
+(println "Large test: 1000 agents x 100 messages")
+(println "Result:" (run 1000 100))
+(println "")
+
+(println "=== Benchmark Complete ===")

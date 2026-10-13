@@ -1,0 +1,72 @@
+; =====================
+; doggo.repl tests
+; =====================
+(ns doggo.repl-test
+  (:require [doggo.repl :as repl]
+    [doggo.string :as str]
+    [doggo.test :as t]))
+
+(ns doggo.repl-macro-only)
+(defmacro hi "macro docs" [] 1)
+
+(ns doggo.repl-test
+  (:require [doggo.repl :as repl]
+    [doggo.string :as str]
+    [doggo.test :as t]))
+
+(def ^{:doc "alpha helper for apropos"} alpha-helper
+  (fn [x] x))
+
+(def ^{:doc "beta helper for find-doc"} beta-helper
+  (fn [] :ok))
+
+(def shadow-target
+  (fn [] 2))
+
+(defmacro shadow-target "macro shadow docs" [] 1)
+
+(t/deftest repl-introspection-returns-structured-data
+  (t/is (str/includes? (repl/source-str 'alpha-helper)
+      "alpha-helper"))
+  (t/is (some (fn [sym] (= sym 'alpha-helper))
+      (repl/dir 'doggo.repl-test)))
+  (t/is (some (fn [sym] (= sym 'map))
+      (repl/dir 'doggo.core)))
+  (t/is (some (fn [sym] (= sym 'doggo.repl-test/alpha-helper))
+      (repl/apropos "alpha")))
+  (t/is (some (fn [sym] (= sym 'doggo.repl-macro-only/hi))
+      (repl/apropos "hi")))
+  (t/is (str/includes? (repl/source-str 'doggo.repl-macro-only/hi)
+      "defmacro hi"))
+  (let [matches (repl/find-doc "beta")]
+    (t/is (some (fn [entry] (= (:name entry) 'doggo.repl-test/beta-helper))
+        matches))
+    (t/is (some (fn [entry] (= (:doc entry) "beta helper for find-doc"))
+        matches)))
+  (let [matches (repl/find-doc "macro docs")]
+    (t/is (some (fn [entry] (= (:name entry) 'doggo.repl-macro-only/hi))
+        matches)))
+  (t/is (= 1 (shadow-target)))
+  (t/is (str/includes? (repl/source-str 'shadow-target)
+      "defmacro shadow-target"))
+  (let [matches (repl/find-doc "macro shadow docs")]
+    (t/is (some (fn [entry] (= (:name entry) 'doggo.repl-test/shadow-target))
+        matches)))
+  (let [root (repl/root-cause
+        (ex-info "outer" {:kind :outer}
+          (ex-info "boom" {:kind :inner})))]
+    (t/is (= :inner (:kind (ex-data root))))
+    (t/is (= "boom" (ex-message root))))
+  (let [result (try
+        ((fn boom [] (throw (ex-info "boom" {:kind :inner}))))
+        (catch [e]
+          [(repl/pst e {:depth 1})
+            (repl/pst e)]))]
+    (t/is (= [nil nil] result)))
+  (t/is (t/thrown-with-msg?
+      #"expects error"
+      (repl/pst 1)))
+  (t/is (= nil (repl/pst)))
+  (t/is (t/thrown-with-msg?
+      #"expects error"
+      (repl/root-cause 42))))

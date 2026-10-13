@@ -1,0 +1,51 @@
+; =====================
+; doggo.instant tests
+; =====================
+(ns doggo.instant-test
+  (:require [doggo.instant :as inst]
+    [doggo.test :as t]))
+
+(t/deftest parse-timestamp-normalizes-to-utc
+  (let [timestamp (inst/parse-timestamp "2024-01-02T03:04:05Z")]
+    (t/is (= "2024-01-02T03:04:05Z" (:instant timestamp)))
+    (t/is (= 1704164645000 (:epoch-millis timestamp)))
+    (t/is (= 0 (:offset-seconds timestamp)))))
+
+(t/deftest parse-timestamp-preserves-offset-information
+  (let [timestamp (inst/parse-timestamp "2024-01-02T12:04:05+09:00")]
+    (t/is (= "2024-01-02T03:04:05Z" (:instant timestamp)))
+    (t/is (= 1704164645000 (:epoch-millis timestamp)))
+    (t/is (= 32400 (:offset-seconds timestamp)))))
+
+(t/deftest parse-timestamp-accepts-date-only-input
+  (let [timestamp (inst/parse-timestamp "2024-01-02")]
+    (t/is (= "2024-01-02T00:00:00Z" (:instant timestamp)))
+    (t/is (= 1704153600000 (:epoch-millis timestamp)))
+    (t/is (= 0 (:offset-seconds timestamp)))))
+
+(t/deftest parse-timestamp-supports-clojure-style-truncated-input
+  (let [year (inst/parse-timestamp "2024")
+      month (inst/parse-timestamp "2024-01")
+      hour (inst/parse-timestamp "2024-01-02T03")
+      minute (inst/parse-timestamp "2024-01-02T03:04")
+      fractional (inst/parse-timestamp "2024-01-02T03:04:05.123456789123Z")]
+    (t/is (= "2024-01-01T00:00:00Z" (:instant year)))
+    (t/is (= 1704067200000 (:epoch-millis year)))
+    (t/is (= "2024-01-01T00:00:00Z" (:instant month)))
+    (t/is (= "2024-01-02T03:00:00Z" (:instant hour)))
+    (t/is (= "2024-01-02T03:04:00Z" (:instant minute)))
+    (t/is (= "2024-01-02T03:04:05.123456789Z" (:instant fractional)))))
+
+(t/deftest parse-timestamp-rejects-invalid-values
+  (t/is (t/thrown-with-msg?
+      #"parse-timestamp"
+      (inst/parse-timestamp "not-a-timestamp")))
+  (t/is (t/thrown-with-msg?
+      #"parse-timestamp"
+      (inst/parse-timestamp "2024-01-02 03:04:05")))
+  (t/is (t/thrown-with-msg?
+      #"parse-timestamp"
+      (inst/parse-timestamp "2024-01-02 03:04:05+09:00")))
+  (t/is (t/thrown-with-msg?
+      #"parse-timestamp"
+      (inst/parse-timestamp "2024-13"))))

@@ -1,0 +1,76 @@
+; =====================
+; doggo.datafy tests
+; =====================
+(ns doggo.datafy-test
+  (:require [doggo.datafy :as datafy]
+    [doggo.os :as os]
+    [doggo.process :as proc]
+    [doggo.test :as t]))
+
+(defrecord User [name])
+(deftype Counter [value])
+
+(t/deftest datafy-leaves-plain-data-unchanged
+  (let [result (if (= "windows" (os/os-name))
+        (proc/run "cmd.exe" "/d" "/c" "echo hi")
+        (proc/run "sh" "-lc" "printf hi"))]
+    (t/is (= {:a 1 :b [2 3]} (datafy/datafy {:a 1 :b [2 3]})))
+    (t/is (= result (datafy/datafy result)))))
+
+(t/deftest datafy-exception-normalizes-to-plain-map
+  (let [exception (ex-info "outer" {:kind :outer}
+        (ex-info "boom" {:kind :inner}))
+      view (datafy/datafy exception)
+      cause (:cause view)
+      via (:via view)
+      trace (:trace view)]
+    (t/is (map? view))
+    (t/is (= "exception" (:kind view)))
+    (t/is (= "runtime" (:phase view)))
+    (t/is (string? (:type view)))
+    (t/is (= "outer" (:message view)))
+    (t/is (= "boom" cause))
+    (t/is (= 2 (count via)))
+    (t/is (vector? trace))
+    (t/is (map? (:data view)))))
+
+(t/deftest datafy-record-and-type-definitions
+  (let [record-def-view (datafy/datafy User)
+      type-def-view (datafy/datafy Counter)]
+    (t/is (= :record-def (:kind record-def-view)))
+    (t/is (= "doggo.datafy-test" (:ns record-def-view)))
+    (t/is (= "User" (:name record-def-view)))
+    (t/is (= "doggo.datafy-test/User" (:qualified-name record-def-view)))
+    (t/is (= [:name] (:fields record-def-view)))
+    (t/is (= "(defrecord User [name])" (:source (:meta record-def-view))))
+    (t/is (= :type-def (:kind type-def-view)))
+    (t/is (= "doggo.datafy-test" (:ns type-def-view)))
+    (t/is (= "Counter" (:name type-def-view)))
+    (t/is (= "doggo.datafy-test/Counter" (:qualified-name type-def-view)))
+    (t/is (= [:value] (:fields type-def-view)))
+    (t/is (= "(deftype Counter [value])" (:source (:meta type-def-view))))))
+
+(t/deftest datafy-record-and-type-instances
+  (let [record-view (datafy/datafy (->User "Ada"))
+      type-view (datafy/datafy (->Counter 3))]
+    (t/is (= {:kind :record
+          :ns "doggo.datafy-test"
+          :name "User"
+          :qualified-name "doggo.datafy-test/User"
+          :data {:name "Ada"}}
+        record-view))
+    (t/is (= {:kind :type-instance
+          :ns "doggo.datafy-test"
+          :name "Counter"
+          :qualified-name "doggo.datafy-test/Counter"
+          :data {:value 3}}
+        type-view))))
+
+(t/deftest datafy-normalizes-selected-nested-values
+  (let [nested-record {:user (->User "Ada")}]
+    (t/is (= {:kind :record
+          :ns "doggo.datafy-test"
+          :name "User"
+          :qualified-name "doggo.datafy-test/User"
+          :data {:name "Ada"}}
+        (datafy/datafy (:user nested-record))))))

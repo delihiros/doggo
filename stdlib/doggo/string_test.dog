@@ -1,0 +1,34 @@
+; =====================
+; doggo.string tests
+; =====================
+(ns doggo.string-test
+  (:require [doggo.string :as str]
+    [doggo.test :as t]))
+
+(t/deftest string-namespace-wraps-builtins-and-extra-apis
+  (t/is (= ["alpha" "beta" "gamma"]
+      (str/split-lines "alpha\nbeta\ngamma")))
+  (t/is (= "Doggo" (str/capitalize "dOGGO")))
+  (t/is (= "cba" (apply str (reverse "abc"))))
+  (t/is (= "abc  " (str/triml "  abc  ")))
+  (t/is (= "  abc" (str/trimr "  abc  ")))
+  (t/is (= "abc" (str/trim-newline "abc\n\r\n")))
+  (t/is (= "\\$1\\\\x" (str/re-quote-replacement "$1\\x")))
+  (t/is (= "hi world hello"
+      (str/replace-first "hello world hello" "hello" "hi")))
+  (t/is (= "&lt;tag&gt;"
+      (str/escape "<tag>" {"<" "&lt;" ">" "&gt;"})))
+  (t/is (str/starts-with? "doggo" "dog"))
+  (t/is (str/blank? " \n\t")))
+
+(t/deftest string-namespace-uses-unicode-code-points
+  (let [s "A😀B"]
+    (t/is (= 3 (count s)))
+    (t/is (= "😀" (str (nth s 1))))
+    (t/is (= "A" (str (first s))))
+    (t/is (= "A😀B" (apply str (seq s))))
+    (t/is (= "😀" (subs s 1 2)))
+    (t/is (= 1 (str/index-of s "😀")))
+    (t/is (= 2 (str/index-of s "B")))
+    (t/is (= 2 (str/last-index-of "😀x😀" "😀")))
+    (t/is (= "B😀A" (apply str (reverse s))))))

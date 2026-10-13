@@ -1,0 +1,73 @@
+; =====================
+; Doggo JSON Library
+; =====================
+(ns doggo.json
+  (:require [doggo.io :as io]))
+
+(def ^:private -read-string json-read-string*)
+(def ^:private -write-string json-write-string*)
+
+(def ^:private -invalid-argument
+  (fn [fn-name message argument expected actual]
+    (throw (ex-info message
+        {:kind :invalid-argument
+          :function fn-name
+          :argument argument
+          :expected expected
+          :actual actual}))))
+
+(def ^:private -rethrow-io
+  (fn [fn-name exception]
+    (throw (ex-info
+        (str fn-name ": " (ex-message exception))
+        (assoc (ex-data exception) :function fn-name)
+        exception))))
+
+(def ^:private -read-source
+  (fn [source]
+    (try
+      (io/slurp source {:binary false})
+      (catch [e]
+        (-rethrow-io 'doggo.json/read e)))))
+
+(def ^:private -non-append-target
+  (fn [target]
+    (if (and (map? target)
+        (or (= (:type target) :writer-spec)
+          (= (:type target) :output-stream-spec))
+        (:append target))
+      (-invalid-argument 'doggo.json/write
+        "doggo.json/write does not support append targets"
+        :target
+        "non-append path, doggo.io writer-spec, or doggo.io output-stream-spec"
+        target)
+      target)))
+
+(def ^:private -write-target
+  (fn [value target opts]
+    (let [encoded (-write-string value opts)]
+      (try
+        (io/spit (-non-append-target target) encoded {:binary false :append false})
+        (catch [e]
+          (-rethrow-io 'doggo.json/write e)))
+      nil)))
+
+(def read-string
+  (fn
+    ([source] (-read-string source {}))
+    ([source opts] (-read-string source opts))))
+
+(def read
+  (fn
+    ([source] (-read-string (-read-source source) {}))
+    ([source opts] (-read-string (-read-source source) opts))))
+
+(def write-string
+  (fn
+    ([value] (-write-string value {}))
+    ([value opts] (-write-string value opts))))
+
+(def write
+  (fn
+    ([value target] (-write-target value target {}))
+    ([value target opts] (-write-target value target opts))))

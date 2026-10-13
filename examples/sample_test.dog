@@ -1,0 +1,8 @@
+(ns examples.test-sample)
+
+; doggo mod sync の後、doggo test examples/sample_test.dog で実行できるサンプル
+(doggo.test/deftest arithmetic-sample
+  (doggo.test/is (= (+ 1 2) 3)))
+
+(doggo.test/deftest collection-sample
+  (doggo.test/is (= (first [10 20 30]) 10)))

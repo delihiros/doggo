@@ -1,0 +1,58 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/doggo
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Generated project state and build artifacts
+/.doggo/
+/dist/
+editors/vscode/node_modules/
+editors/vscode/out/
+editors/vscode/dist/
+
+# Benchmark results (generated)
+bench/results/
+
+# AI
+.cursor/
+doggo_new
+.worktrees/
+/work/
+
+# Python release tooling
+__pycache__/
+*.py[cod]
+
+# Local credentials
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx

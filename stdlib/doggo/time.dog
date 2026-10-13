@@ -1,0 +1,252 @@
+; =====================
+; Doggo Time Library
+; =====================
+(ns doggo.time
+  (:require [doggo.math :as math]))
+
+(def ^:private -now time-now*)
+(def ^:private -from-epoch-millis time-from-epoch-millis*)
+(def ^:private -instant-shape time-instant*)
+(def ^:private -format-instant time-format*)
+(def ^:private -sleep* time-sleep*)
+(def ^:private -max-rfc3339-offset-seconds (+ (* 23 60 60) (* 59 60)))
+
+(def ^:private -illegal-argument
+  (fn
+    ([fn-name message]
+      (-illegal-argument fn-name message {}))
+    ([fn-name message details]
+      (throw (ex-info message
+          (merge {:kind :invalid-argument
+              :function fn-name}
+            details))))))
+
+(def ^:private -type-name
+  (fn [value]
+    (if (nil? value) "nil" (type-name value))))
+
+(def ^:private -duration-constructor
+  (fn [fn-name value multiplier]
+    (if (number? value)
+      {:millis (* value multiplier)}
+      (-illegal-argument fn-name
+        (str fn-name ": expected number, got " (-type-name value))))))
+
+(def ^:private -invalid-duration
+  (fn [fn-name value]
+    (throw (ex-info
+        (str "doggo.time duration must have :millis, got " (pr-str value))
+        {:kind :invalid-argument
+          :function fn-name
+          :argument :duration
+          :actual value}))))
+
+(def ^:private -instant
+  (fn [fn-name value]
+    (-instant-shape fn-name value)))
+
+(def ^:private -duration
+  (fn [fn-name value]
+    (if (and (map? value)
+        (contains? value :millis)
+        (number? (:millis value)))
+      value
+      (-invalid-duration fn-name value))))
+
+(def ^:private -duration?
+  (fn [value]
+    (and (map? value)
+      (contains? value :millis)
+      (number? (:millis value)))))
+
+(def ^:private -compare
+  (fn [fn-name left right]
+    (let [lm (:epoch-millis (-instant fn-name left))
+        rm (:epoch-millis (-instant fn-name right))]
+      (cond
+        (< lm rm) -1
+        (> lm rm) 1
+        :else 0))))
+
+(def ^:private -with-offset
+  (fn [instant offset]
+    (assoc instant :offset-seconds offset)))
+
+(def ^:private -option-map
+  (fn [fn-name opts]
+    (cond
+      (nil? opts) {}
+      (map? opts) opts
+      :else
+      (-illegal-argument fn-name
+        (str fn-name ": expected option map")
+        {:argument :options
+          :expected "map"
+          :actual opts}))))
+
+(def ^:private -first-unsupported-option
+  (fn [opts allowed]
+    (loop [remaining (keys opts)]
+      (if (empty? remaining)
+        nil
+        (let [option (first remaining)]
+          (if (contains? allowed option)
+            (recur (rest remaining))
+            option))))))
+
+(def ^:private -integral-number?
+  (fn [value]
+    (and (number? value)
+      (= value (math/round value)))))
+
+(def ^:private -rfc3339-offset
+  (fn [fn-name source value]
+    (when (not (-integral-number? value))
+      (-illegal-argument fn-name
+        (str fn-name ": " source " must be integer")))
+    (when (or (not (= 0 (mod value 60)))
+        (< value (- -max-rfc3339-offset-seconds))
+        (> value -max-rfc3339-offset-seconds))
+      (-illegal-argument fn-name
+        (str fn-name ": " source
+          " must be whole minutes within RFC3339 range")))
+    value))
+
+(def ^:private -format-options
+  (fn [opts]
+    (let [fn-name 'doggo.time/format
+        options (-option-map fn-name opts)
+        unsupported (-first-unsupported-option options
+          {:offset true
+            :offset-seconds true})]
+      (if unsupported
+        (-illegal-argument fn-name
+          (str fn-name ": unsupported option " unsupported))
+        (let [offset-mode (get options :offset :utc)
+            explicit-offset (get options :offset-seconds nil)]
+          (when (and (contains? options :offset)
+              (not (or (= offset-mode :utc)
+                  (= offset-mode :preserve))))
+            (-illegal-argument fn-name
+              (str fn-name ": option :offset must be :utc or :preserve")))
+          (when (and (contains? options :offset)
+              (contains? options :offset-seconds))
+            (-illegal-argument fn-name
+              (str fn-name ": options :offset and :offset-seconds must not be used together")))
+          (when (contains? options :offset-seconds)
+            (-rfc3339-offset fn-name "option :offset-seconds" explicit-offset))
+          {:offset offset-mode
+            :offset-seconds explicit-offset})))))
+
+(def now
+  (fn []
+    (-now)))
+
+(def from-epoch-millis
+  (fn [millis]
+    (-from-epoch-millis 'doggo.time/from-epoch-millis millis)))
+
+(def format
+  (fn
+    ([instant]
+      (:instant (-instant 'doggo.time/format instant)))
+    ([instant opts]
+      (let [value (-instant 'doggo.time/format instant)
+          options (-format-options opts)
+          explicit-offset (:offset-seconds options)]
+        (cond
+          (not (nil? explicit-offset))
+          (-format-instant (-with-offset value explicit-offset))
+
+          (= (:offset options) :preserve)
+          (let [offset (:offset-seconds value)]
+            (-rfc3339-offset 'doggo.time/format "instant :offset-seconds" offset)
+            (-format-instant value))
+
+          :else
+          (:instant value))))))
+
+(def epoch-millis
+  (fn [instant]
+    (:epoch-millis (-instant 'doggo.time/epoch-millis instant))))
+
+(def offset-seconds
+  (fn [instant]
+    (:offset-seconds (-instant 'doggo.time/offset-seconds instant))))
+
+(def millis
+  (fn [value]
+    (-duration-constructor 'doggo.time/millis value 1)))
+
+(def seconds
+  (fn [value]
+    (-duration-constructor 'doggo.time/seconds value 1000)))
+
+(def minutes
+  (fn [value]
+    (-duration-constructor 'doggo.time/minutes value (* 60 1000))))
+
+(def hours
+  (fn [value]
+    (-duration-constructor 'doggo.time/hours value (* 60 60 1000))))
+
+(def days
+  (fn [value]
+    (-duration-constructor 'doggo.time/days value (* 24 60 60 1000))))
+
+(def sleep
+  (fn [value]
+    (if (number? value)
+      (-sleep* 'doggo.time/sleep value)
+      (-sleep* 'doggo.time/sleep (:millis (-duration 'doggo.time/sleep value))))))
+
+(def in-millis
+  (fn [duration]
+    (:millis (-duration 'doggo.time/in-millis duration))))
+
+(def in-seconds
+  (fn [duration]
+    (/ (:millis (-duration 'doggo.time/in-seconds duration)) 1000.0)))
+
+(def in-minutes
+  (fn [duration]
+    (/ (:millis (-duration 'doggo.time/in-minutes duration)) 60000.0)))
+
+(def in-hours
+  (fn [duration]
+    (/ (:millis (-duration 'doggo.time/in-hours duration)) 3600000.0)))
+
+(def in-days
+  (fn [duration]
+    (/ (:millis (-duration 'doggo.time/in-days duration)) 86400000.0)))
+
+(def plus
+  (fn [instant duration]
+    (let [base (-instant 'doggo.time/plus instant)
+        delta (-duration 'doggo.time/plus duration)]
+      (-with-offset
+        (-from-epoch-millis 'doggo.time/plus (+ (:epoch-millis base) (:millis delta)))
+        (:offset-seconds base)))))
+
+(def minus
+  (fn [left right]
+    (let [left-instant (-instant 'doggo.time/minus left)]
+      (if (-duration? right)
+        (let [duration (-duration 'doggo.time/minus right)]
+          (-with-offset
+            (-from-epoch-millis 'doggo.time/minus (- (:epoch-millis left-instant) (:millis duration)))
+            (:offset-seconds left-instant)))
+        (millis (- (:epoch-millis left-instant)
+            (:epoch-millis (-instant 'doggo.time/minus right))))))))
+
+(def compare
+  (fn [left right]
+    (-compare 'doggo.time/compare left right)))
+
+(def before?
+  (fn [left right]
+    (= -1 (-compare 'doggo.time/before? left right))))
+
+(def after?
+  (fn [left right]
+    (= 1 (-compare 'doggo.time/after? left right))))

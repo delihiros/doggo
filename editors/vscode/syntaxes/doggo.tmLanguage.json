@@ -1,0 +1,226 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Doggo",
+  "scopeName": "source.doggo",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#regex"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#chars"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#keywordLiterals"
+    },
+    {
+      "include": "#booleansNil"
+    },
+    {
+      "include": "#readerMacros"
+    },
+    {
+      "include": "#listHeads"
+    },
+    {
+      "include": "#punctuation"
+    },
+    {
+      "include": "#symbols"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.semicolon.doggo",
+          "match": ";.*$"
+        }
+      ]
+    },
+    "regex": {
+      "patterns": [
+        {
+          "name": "string.regexp.doggo",
+          "begin": "#\"",
+          "beginCaptures": {
+            "0": {
+              "name": "string.regexp.doggo"
+            }
+          },
+          "end": "\"",
+          "endCaptures": {
+            "0": {
+              "name": "string.regexp.doggo"
+            }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.doggo",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.doggo",
+          "begin": "\"",
+          "beginCaptures": {
+            "0": {
+              "name": "string.quoted.double.doggo"
+            }
+          },
+          "end": "\"",
+          "endCaptures": {
+            "0": {
+              "name": "string.quoted.double.doggo"
+            }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.doggo",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "chars": {
+      "patterns": [
+        {
+          "name": "constant.character.doggo",
+          "match": "\\\\(?:newline|space|tab|return|.)"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.doggo",
+          "match": "(?<![\\w:])[-+]?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?(?![\\w./:-])"
+        }
+      ]
+    },
+    "keywordLiterals": {
+      "patterns": [
+        {
+          "name": "constant.other.keyword.doggo",
+          "match": ":[A-Za-z0-9_+\\-*/=<>!?&|%$#.]+(?:/[A-Za-z0-9_+\\-*/=<>!?&|%$#.]+)?"
+        }
+      ]
+    },
+    "booleansNil": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.doggo",
+          "match": "\\b(?:true|false)\\b"
+        },
+        {
+          "name": "constant.language.nil.doggo",
+          "match": "\\bnil\\b"
+        }
+      ]
+    },
+    "readerMacros": {
+      "patterns": [
+        {
+          "name": "keyword.operator.reader.doggo",
+          "match": "#'|#_|~@|['`~@^]"
+        }
+      ]
+    },
+    "listHeads": {
+      "patterns": [
+        {
+          "name": "meta.definition.function.doggo",
+          "match": "(\\()\\s*(defn|defmacro)(\\s+)([A-Za-z_+\\-*/=<>!?&|%$#][A-Za-z0-9_+\\-*/=<>!?&|%$#./:]*)",
+          "captures": {
+            "1": {
+              "name": "punctuation.section.parens.doggo"
+            },
+            "2": {
+              "name": "keyword.control.doggo"
+            },
+            "4": {
+              "name": "entity.name.function.definition.doggo"
+            }
+          }
+        },
+        {
+          "name": "meta.definition.variable.doggo",
+          "match": "(\\()\\s*(def|defonce)(\\s+)([A-Za-z_+\\-*/=<>!?&|%$#][A-Za-z0-9_+\\-*/=<>!?&|%$#./:]*)",
+          "captures": {
+            "1": {
+              "name": "punctuation.section.parens.doggo"
+            },
+            "2": {
+              "name": "keyword.control.doggo"
+            },
+            "4": {
+              "name": "variable.other.definition.doggo"
+            }
+          }
+        },
+        {
+          "name": "meta.special-form.doggo",
+          "match": "(\\()\\s*(if|let|letfn|loop|recur|fn|do|try|catch|throw|ns|in-ns|require|import|set!|var|when|when-let|if-let|doseq|for|and|or|not|go|dosync|defrecord|deftype|defmulti|defmethod)(?=\\s|\\)|\\])",
+          "captures": {
+            "1": {
+              "name": "punctuation.section.parens.doggo"
+            },
+            "2": {
+              "name": "keyword.control.doggo"
+            }
+          }
+        },
+        {
+          "name": "meta.call.head.doggo",
+          "match": "(\\()\\s*([^\\s\\[\\]{}()\";]+)",
+          "captures": {
+            "1": {
+              "name": "punctuation.section.parens.doggo"
+            },
+            "2": {
+              "name": "entity.name.function.doggo"
+            }
+          }
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.section.parens.doggo",
+          "match": "[()]"
+        },
+        {
+          "name": "punctuation.section.brackets.doggo",
+          "match": "[\\[\\]]"
+        },
+        {
+          "name": "punctuation.section.braces.doggo",
+          "match": "[{}]"
+        }
+      ]
+    },
+    "symbols": {
+      "patterns": [
+        {
+          "name": "variable.other.doggo",
+          "match": "[A-Za-z_+\\-*/=<>!?&|%$#][A-Za-z0-9_+\\-*/=<>!?&|%$#./:]*"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.26.9'
+  NODE_VERSION: '24.21.0'
+
+jobs:
+  go:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Validate GitHub Actions workflows
+        if: runner.os == 'Linux'
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+      - name: Verify tracked root lock
+        run: |
+          set -euo pipefail
+          go run ./cmd/doggo mod sync
+          git diff --exit-code -- doggo.lock
+      - name: Run native Go tests
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            go test -count=1 -p 1 -timeout 45m ./...
+          else
+            go test -count=1 ./...
+          fi
+      - run: go vet ./...
+      - run: go run ./cmd/doggo fmt --check .
+      - run: go run ./cmd/doggo test stdlib
+      - name: Verify public source export
+        run: python .github/scripts/test_public_snapshot.py
+      - name: Verify release tag binding
+        if: runner.os == 'Linux'
+        run: python .github/scripts/test_release_tag.py
+      - name: Verify release build ordering
+        if: runner.os == 'Linux'
+        run: python .github/scripts/test_release_make.py
+      - name: Verify third party notices
+        run: go run ./cmd/license-notices -check
+
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - run: go test -race ./internal/atom ./internal/agent ./internal/stm ./internal/types/... ./internal/vm/...
+
+  vulnerabilities:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+      - run: govulncheck ./...
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
+      - run: gitleaks git . --log-opts=--all --redact --no-banner
+
+  vscode:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - run: npm ci
+      - run: npm audit
+      - run: npm run verify
+      - run: npm run package

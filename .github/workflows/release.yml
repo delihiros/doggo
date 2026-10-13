@@ -1,0 +1,388 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing tag to publish (for example v0.2.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: "1.26.9"
+  REQUESTED_VERSION: ${{ inputs.version }}
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.version) || github.ref }}
+      - name: Resolve immutable release source
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit="$(bash .github/scripts/verify-release-tag.sh)"
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+
+  secrets:
+    needs: source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.source.outputs.commit }}
+      - name: Verify release source
+        env:
+          EXPECTED_RELEASE_COMMIT: ${{ needs.source.outputs.commit }}
+        run: bash .github/scripts/verify-release-tag.sh
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
+      - run: gitleaks git . --log-opts=--all --redact --no-banner
+
+  quality:
+    needs: source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.source.outputs.commit }}
+      - name: Verify release source
+        shell: bash
+        working-directory: .
+        env:
+          EXPECTED_RELEASE_COMMIT: ${{ needs.source.outputs.commit }}
+        run: bash .github/scripts/verify-release-tag.sh
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Verify tracked root lock
+        run: |
+          go run ./cmd/doggo mod sync
+          git diff --exit-code -- doggo.lock
+      - run: go test -count=1 ./...
+      - run: go vet ./...
+      - run: go run ./cmd/doggo fmt --check .
+      - run: go test -race ./internal/atom ./internal/agent ./internal/stm ./internal/types/... ./internal/vm/...
+      - run: go run ./cmd/doggo test stdlib
+      - name: Install vulnerability scanner
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+      - run: govulncheck ./...
+
+  quality-native:
+    needs: source
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.source.outputs.commit }}
+      - name: Verify release source
+        shell: bash
+        working-directory: .
+        env:
+          EXPECTED_RELEASE_COMMIT: ${{ needs.source.outputs.commit }}
+        run: bash .github/scripts/verify-release-tag.sh
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Run native Go tests
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            go test -count=1 -p 1 -timeout 45m ./...
+          else
+            go test -count=1 ./...
+          fi
+      - run: go vet ./...
+      - run: go run ./cmd/doggo fmt --check .
+      - name: Verify root lock and stdlib
+        run: |
+          set -euo pipefail
+          go run ./cmd/doggo mod sync
+          git diff --exit-code -- doggo.lock
+          go run ./cmd/doggo test stdlib
+
+  dependency-audit:
+    needs: source
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.source.outputs.commit }}
+      - name: Verify release source
+        shell: bash
+        working-directory: .
+        env:
+          EXPECTED_RELEASE_COMMIT: ${{ needs.source.outputs.commit }}
+        run: bash .github/scripts/verify-release-tag.sh
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+      - run: govulncheck ./...
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+
+  cli:
+    needs: [source, quality, quality-native, dependency-audit, secrets]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.source.outputs.commit }}
+      - name: Verify release source
+        shell: bash
+        working-directory: .
+        env:
+          EXPECTED_RELEASE_COMMIT: ${{ needs.source.outputs.commit }}
+        run: bash .github/scripts/verify-release-tag.sh
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "value=${REQUESTED_VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build and archive CLI
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          env -u GOOS -u GOARCH go run ./cmd/license-notices -check
+          mkdir -p dist/package
+          cp LICENSE THIRD_PARTY_NOTICES dist/package/
+          binary="dist/package/doggo"
+          if [[ "$GOOS" == "windows" ]]; then
+            binary="${binary}.exe"
+          fi
+          CGO_ENABLED=0 go build -trimpath \
+            -ldflags="-s -w -X main.version=${VERSION}" \
+            -o "$binary" ./cmd/doggo
+          archive="doggo-${VERSION}-${GOOS}-${GOARCH}"
+          if [[ "$GOOS" == "windows" ]]; then
+            (cd dist/package && zip -q "../${archive}.zip" doggo.exe LICENSE THIRD_PARTY_NOTICES)
+          else
+            tar -C dist/package -czf "dist/${archive}.tar.gz" doggo LICENSE THIRD_PARTY_NOTICES
+          fi
+          if [[ "$GOOS" == "windows" ]]; then
+            artifact="dist/${archive}.zip"
+          else
+            artifact="dist/${archive}.tar.gz"
+          fi
+          env -u GOOS -u GOARCH go run ./cmd/license-notices -verify-artifact "$artifact"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: doggo-${{ steps.version.outputs.value }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/doggo-*
+          if-no-files-found: error
+
+  vscode:
+    needs: [source, quality, quality-native, dependency-audit, secrets]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.source.outputs.commit }}
+      - name: Verify release source
+        shell: bash
+        working-directory: .
+        env:
+          EXPECTED_RELEASE_COMMIT: ${{ needs.source.outputs.commit }}
+        run: bash .github/scripts/verify-release-tag.sh
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24.21.0"
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "value=${REQUESTED_VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+      - run: npm ci
+      - run: npm audit
+      - name: Set extension version
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: npm version --no-git-tag-version "${VERSION#v}"
+      - run: npm test
+      - run: npm run verify
+      - run: npm run package
+      - name: Verify VSIX licenses
+        working-directory: .
+        run: go run ./cmd/license-notices -verify-artifact editors/vscode/dist/doggo-vscode.vsix
+      - uses: actions/upload-artifact@v7
+        with:
+          name: doggo-vscode-${{ steps.version.outputs.value }}
+          path: editors/vscode/dist/doggo-vscode.vsix
+          if-no-files-found: error
+
+  publish:
+    permissions:
+      contents: write
+    needs: [source, cli, vscode]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.source.outputs.commit }}
+      - name: Verify release source
+        shell: bash
+        working-directory: .
+        env:
+          EXPECTED_RELEASE_COMMIT: ${{ needs.source.outputs.commit }}
+        run: bash .github/scripts/verify-release-tag.sh
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "value=${REQUESTED_VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Verify tag and artifact versions
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/verify-release-tag.sh
+          test -n "$(find release-assets -maxdepth 1 -type f -name "doggo-${VERSION}-*" -print -quit)"
+          test -f release-assets/doggo-vscode.vsix
+      - name: Install vulnerability scanner
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+      - name: Create release bundle and verify integrity files
+        shell: bash
+        env:
+          DOGGO_RELEASE_PRIVATE_KEY: ${{ secrets.DOGGO_RELEASE_PRIVATE_KEY }}
+          DOGGO_RELEASE_PUBLIC_KEY: ${{ secrets.DOGGO_RELEASE_PUBLIC_KEY }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$DOGGO_RELEASE_PRIVATE_KEY" || -z "$DOGGO_RELEASE_PUBLIC_KEY" ]]; then
+            echo "DOGGO_RELEASE_PRIVATE_KEY and DOGGO_RELEASE_PUBLIC_KEY secrets are required" >&2
+            exit 1
+          fi
+          private_key="$(mktemp)"
+          public_key="release-assets/doggo-release-public.pem"
+          public_fingerprint_file="release-assets/doggo-release-public.pem.sha256"
+          trap 'rm -f "$private_key"' EXIT
+          chmod 600 "$private_key"
+          printf '%s' "$DOGGO_RELEASE_PRIVATE_KEY" > "$private_key"
+          printf '%s' "$DOGGO_RELEASE_PUBLIC_KEY" > "$public_key"
+          chmod 0644 "$public_key"
+          public_fingerprint="$(sha256sum "$public_key" | cut -d' ' -f1)"
+          printf '%s  %s\n' "$public_fingerprint" "${public_key##*/}" > "$public_fingerprint_file"
+          echo "Release public key SHA-256: \`$public_fingerprint\`" >> "$GITHUB_STEP_SUMMARY"
+          go build -trimpath -ldflags="-X main.version=${VERSION}" -o /tmp/doggo-release ./cmd/doggo
+          GOFLAGS="-ldflags=-X=main.version=${VERSION}" /tmp/doggo-release build --sync
+          test "$(/tmp/doggo-release exec -- version)" = "doggo version ${VERSION}"
+          cp LICENSE THIRD_PARTY_NOTICES release-assets/
+          artifacts="$(find release-assets -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.vsix' -o -name '*.pem' -o -name '*.pem.sha256' -o -name 'LICENSE' -o -name 'THIRD_PARTY_NOTICES' \) -print | sort | paste -sd, -)"
+          /tmp/doggo-release release bundle \
+            --artifacts "$artifacts" \
+            --out-dir release-assets/release-bundle \
+            --private-key "$private_key"
+          /tmp/doggo-release release gate \
+            --out-dir release-assets/release-bundle \
+            --public-key "$public_key"
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          .github/scripts/publish-release-assets.sh "$VERSION" release-assets/release-bundle

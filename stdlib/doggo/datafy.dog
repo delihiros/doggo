@@ -1,0 +1,8 @@
+; =====================
+; Doggo Datafy Library
+; =====================
+(ns doggo.datafy)
+
+(def datafy
+  (fn [value]
+    (datafy-value* value)))

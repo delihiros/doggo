@@ -1,0 +1,136 @@
+; =====================
+; doggo.xml tests
+; =====================
+(ns doggo.xml-test
+  (:require [doggo.io :as io]
+    [doggo.os :as os]
+    [doggo.test :as t]
+    [doggo.xml :as xml]))
+
+(def xml-reader-path
+  (io/join-path (os/system-temp-dir) (str "doggo-xml-read-" (nano-time) ".xml")))
+
+(t/deftest read-string-returns-clojure-like-node-map
+  (t/is (= {:tag :root
+        :attrs {:a "1"}
+        :content [{:tag :child
+            :attrs nil
+            :content ["txt"]}]}
+      (xml/read-string "<root a=\"1\"><child>txt</child></root>")))
+  (t/is (= {:tag :root
+        :attrs nil
+        :content nil}
+      (xml/read-string "<root/>"))))
+
+(t/deftest read-supports-reader-and-input-stream-sources
+  (io/spit xml-reader-path "<root a=\"1\"><child>txt</child></root>")
+  (t/is (= {:tag :root
+        :attrs {:a "1"}
+        :content [{:tag :child
+            :attrs nil
+            :content ["txt"]}]}
+      (xml/read (io/reader-spec xml-reader-path))))
+  (t/is (= {:tag :root
+        :attrs {:a "1"}
+        :content [{:tag :child
+            :attrs nil
+            :content ["txt"]}]}
+      (xml/read (io/input-stream-spec xml-reader-path)))))
+
+(t/deftest read-supports-path-and-resource-path
+  (io/spit xml-reader-path "<root a=\"1\"><child>txt</child></root>")
+  (t/is (= {:tag :root
+        :attrs {:a "1"}
+        :content [{:tag :child
+            :attrs nil
+            :content ["txt"]}]}
+      (xml/read xml-reader-path)))
+  (t/is (= {:tag :fixture
+        :attrs {:kind "resource"}
+        :content [{:tag :child
+            :attrs nil
+            :content ["fixture"]}]}
+      (xml/read (io/resource-path "doggo/xml/resource.xml")))))
+
+(t/deftest read-string-ignores-formatting-whitespace
+  (t/is (= {:tag :root
+        :attrs nil
+        :content [{:tag :child
+            :attrs nil
+            :content ["txt"]}]}
+      (xml/read-string "<root>\n  <child>txt</child>\n</root>"))))
+
+(t/deftest read-string-preserves-namespace-prefixes
+  (t/is (= {:tag (keyword "ns:root")
+        :attrs {(keyword "ns:a") "1"
+          (keyword "xmlns:ns") "urn:x"}
+        :content [{:tag (keyword "ns:child")
+            :attrs nil
+            :content nil}]}
+      (xml/read-string "<ns:root xmlns:ns=\"urn:x\" ns:a=\"1\"><ns:child/></ns:root>"))))
+
+(t/deftest read-string-preserves-default-namespace-declarations
+  (t/is (= {:tag :root
+        :attrs {:a "1"
+          :xmlns "urn:x"}
+        :content [{:tag :child
+            :attrs nil
+            :content nil}]}
+      (xml/read-string "<root xmlns=\"urn:x\" a=\"1\"><child/></root>"))))
+
+(t/deftest write-string-produces-clojure-like-xml
+  (let [node {:tag :root
+        :attrs {:a "1"}
+        :content [{:tag :child
+            :attrs nil
+            :content ["txt"]}]}
+      emitted (xml/write-string node)]
+    (t/is (= "<?xml version='1.0' encoding='UTF-8'?>\n<root a='1'>\n<child>\ntxt\n</child>\n</root>"
+        emitted))
+    (t/is (= {:tag :root
+          :attrs {:a "1"}
+          :content [{:tag :child
+              :attrs nil
+              :content ["\ntxt\n"]}]}
+        (xml/read-string emitted)))))
+
+(t/deftest write-string-preserves-prefixes-and-coerces-attrs
+  (t/is (= "<?xml version='1.0' encoding='UTF-8'?>\n<ns:root ns:a='1' xmlns:ns='urn:x'>\n<ns:child/>\n</ns:root>"
+      (xml/write-string {:tag (keyword "ns:root")
+          :attrs {(keyword "ns:a") 1
+            (keyword "xmlns:ns") "urn:x"}
+          :content [{:tag (keyword "ns:child")
+              :attrs nil
+              :content nil}]})))
+  (t/is (= "<?xml version='1.0' encoding='UTF-8'?>\n<root a='true' b=':ok' c='x'/>"
+      (xml/write-string {:tag :root
+          :attrs {:a true :b :ok :c "x"}
+          :content nil})))
+  (t/is (= "<?xml version='1.0' encoding='UTF-8'?>\n<root a='1' xmlns='urn:x'>\n<child/>\n</root>"
+      (xml/write-string {:tag :root
+          :attrs {:xmlns "urn:x"
+            :a 1}
+          :content [{:tag :child
+              :attrs nil
+              :content nil}]}))))
+
+(t/deftest accessors-return-node-components
+  (let [node (xml/read-string "<root a=\"1\"><child>txt</child></root>")]
+    (t/is (= :root (xml/tag node)))
+    (t/is (= {:a "1"} (xml/attrs node)))
+    (t/is (= [{:tag :child :attrs nil :content ["txt"]}]
+        (xml/content node)))))
+
+(t/deftest xml-rejects-invalid-input
+  (t/is (t/thrown-with-msg?
+      #"xml/read-string"
+      (xml/read-string "<root>")))
+  (t/is (t/thrown-with-msg?
+      #"doggo.xml/read: doggo.io/slurp:"
+      (xml/read :bad)))
+  (t/is (t/thrown-with-msg?
+      #"slurp"
+      (xml/read "<root/>")))
+  (t/is (t/thrown-with-msg?
+      #"xml/write-string"
+      (xml/write-string {:tag "root"}))))

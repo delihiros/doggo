@@ -1,0 +1,273 @@
+; =====================
+; Doggo Zip Library
+; =====================
+(ns doggo.zip)
+
+(def ^:private -make-loc
+  (fn [prototype node path end?]
+    {:node node
+      :path path
+      :end? end?
+      :branch? (:branch? prototype)
+      :children (:children prototype)
+      :make-node (:make-node prototype)}))
+
+(def ^:private -mark-changed
+  (fn [path]
+    (if path
+      (assoc path :changed? true)
+      nil)))
+
+(def ^:private -preserve-meta
+  (fn [new-node old-node]
+    (if-some [m (meta old-node)]
+      (with-meta new-node m)
+      new-node)))
+
+(def zipper
+  (fn [branch? children make-node root]
+    {:node root
+      :path nil
+      :end? false
+      :branch? branch?
+      :children children
+      :make-node make-node}))
+
+(def node
+  (fn [loc]
+    (:node loc)))
+
+(def end?
+  (fn [loc]
+    (= true (:end? loc))))
+
+(def branch?
+  (fn [loc]
+    ((:branch? loc) (node loc))))
+
+(def children
+  (fn [loc]
+    (if (branch? loc)
+      ((:children loc) (node loc))
+      (throw (ex-info "called children on a leaf node"
+          {:kind :invalid-state
+            :function 'doggo.zip/children})))))
+
+(def down
+  (fn [loc]
+    (if (branch? loc)
+      (when-let [kids (seq (children loc))]
+        (-make-loc loc
+          (first kids)
+          {:l []
+            :r (vec (rest kids))
+            :parent (node loc)
+            :ppath (:path loc)}
+          false))
+      nil)))
+
+(def up
+  (fn [loc]
+    (when-let [path (:path loc)]
+      (if (:changed? path)
+        (let [parent (:parent path)
+            items (concat (:l path) [(node loc)] (:r path))]
+          (-make-loc loc
+            ((:make-node loc) parent items)
+            (-mark-changed (:ppath path))
+            false))
+        (-make-loc loc
+          (:parent path)
+          (:ppath path)
+          false)))))
+
+(def right
+  (fn [loc]
+    (when-let [path (:path loc)]
+      (when-let [rights (seq (:r path))]
+        (-make-loc loc
+          (first rights)
+          (assoc path
+            :l (conj (:l path) (node loc))
+            :r (vec (rest rights)))
+          false)))))
+
+(def left
+  (fn [loc]
+    (when-let [path (:path loc)]
+      (when-let [lefts (seq (:l path))]
+        (-make-loc loc
+          (last lefts)
+          (assoc path
+            :l (vec (butlast lefts))
+            :r (vec (cons (node loc) (:r path))))
+          false)))))
+
+(def leftmost
+  (fn [loc]
+    (loop [current loc]
+      (if-let [next-left (left current)]
+        (recur next-left)
+        current))))
+
+(def rightmost
+  (fn [loc]
+    (loop [current loc]
+      (if-let [next-right (right current)]
+        (recur next-right)
+        current))))
+
+(def lefts
+  (fn [loc]
+    (when-let [path (:path loc)]
+      (seq (:l path)))))
+
+(def rights
+  (fn [loc]
+    (when-let [path (:path loc)]
+      (seq (:r path)))))
+
+(def path
+  (fn [loc]
+    (loop [current (:path loc)
+        acc []]
+      (if current
+        (recur (:ppath current)
+          (vec (concat [(:parent current)] acc)))
+        (if (empty? acc)
+          nil
+          acc)))))
+
+(def root
+  (fn [loc]
+    (loop [current loc]
+      (if-let [parent (up current)]
+        (recur parent)
+        (node current)))))
+
+(def replace
+  (fn [loc value]
+    (-make-loc loc value (-mark-changed (:path loc)) false)))
+
+(def edit
+  (fn [loc f & args]
+    (replace loc (apply f (node loc) args))))
+
+(def insert-left
+  (fn [loc item]
+    (if-let [path (:path loc)]
+      (-make-loc loc
+        (node loc)
+        (assoc (-mark-changed path) :l (conj (:l path) item))
+        false)
+      (throw (ex-info "insert-left at top"
+          {:kind :invalid-state
+            :function 'doggo.zip/insert-left})))))
+
+(def insert-right
+  (fn [loc item]
+    (if-let [path (:path loc)]
+      (-make-loc loc
+        (node loc)
+        (assoc (-mark-changed path) :r (vec (cons item (:r path))))
+        false)
+      (throw (ex-info "insert-right at top"
+          {:kind :invalid-state
+            :function 'doggo.zip/insert-right})))))
+
+(def append-child
+  (fn [loc item]
+    (if (branch? loc)
+      (replace loc
+        ((:make-node loc)
+          (node loc)
+          (concat (children loc) [item])))
+      (throw (ex-info "append-child on leaf"
+          {:kind :invalid-state
+            :function 'doggo.zip/append-child})))))
+
+(def ^:private -rightmost-sibling
+  (fn [loc]
+    (loop [current loc]
+      (if-let [next-right (right current)]
+        (recur next-right)
+        current))))
+
+(def ^:private -deepest-rightmost
+  (fn [loc]
+    (loop [current loc]
+      (if-let [child (down current)]
+        (recur (-rightmost-sibling child))
+        current))))
+
+(def remove
+  (fn [loc]
+    (if-let [path (:path loc)]
+      (if (empty? (:l path))
+        (-make-loc loc
+          ((:make-node loc) (:parent path) (:r path))
+          (-mark-changed (:ppath path))
+          false)
+        (-deepest-rightmost
+          (-make-loc loc
+            (last (:l path))
+            {:l (vec (butlast (:l path)))
+              :r (:r path)
+              :parent (:parent path)
+              :ppath (:ppath path)
+              :changed? true}
+            false)))
+      (throw (ex-info "remove at top"
+          {:kind :invalid-state
+            :function 'doggo.zip/remove})))))
+
+(def next
+  (fn [loc]
+    (if (end? loc)
+      loc
+      (if-let [child (down loc)]
+        child
+        (if-let [r (right loc)]
+          r
+          (loop [current loc]
+            (if-let [parent (up current)]
+              (if-let [parent-right (right parent)]
+                parent-right
+                (recur parent))
+              (-make-loc loc (root loc) nil true))))))))
+
+(def prev
+  (fn [loc]
+    (if-let [l (left loc)]
+      (-deepest-rightmost l)
+      (up loc))))
+
+(def seq-zip
+  (fn [root]
+    (zipper seq?
+      identity
+      (fn [node children]
+        (-preserve-meta children node))
+      root)))
+
+(def vector-zip
+  (fn [root]
+    (zipper vector?
+      seq
+      (fn [node children]
+        (-preserve-meta (vec children) node))
+      root)))
+
+(def xml-zip
+  (fn [root]
+    (zipper
+      (fn [node]
+        (and (map? node)
+          (contains? node :tag)))
+      (fn [node]
+        (:content node))
+      (fn [node children]
+        (-preserve-meta
+          (assoc node :content (if (seq children) (vec children) nil))
+          node))
+      root)))

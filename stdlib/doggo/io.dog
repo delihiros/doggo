@@ -1,0 +1,454 @@
+; =====================
+; Doggo I/O Library
+; =====================
+(ns doggo.io)
+
+(def ^:private -invalid-argument
+  (fn
+    ([fn-name message]
+      (throw (ex-info message
+          {:kind :invalid-argument
+            :function fn-name})))
+    ([fn-name message argument expected actual]
+      (throw (ex-info message
+          {:kind :invalid-argument
+            :function fn-name
+            :argument argument
+            :expected expected
+            :actual actual})))))
+
+(def ^:private -source-spec
+  (fn [fn-name source]
+    (cond
+      (string? source) {:type :path :path source}
+      (and (map? source)
+        (= (:type source) :process-reader))
+      source
+      (and (map? source)
+        (string? (:path source))
+        (or (= (:type source) :reader-spec)
+          (= (:type source) :input-stream-spec)))
+      source
+      :else
+      (-invalid-argument fn-name
+        (str fn-name ": expected path string or readable doggo.io descriptor")
+        :source
+        "path string or matching doggo.io descriptor"
+        source))))
+
+(def ^:private -target-spec
+  (fn [fn-name target]
+    (cond
+      (string? target) {:type :path :path target}
+      (and (map? target)
+        (= (:type target) :process-writer))
+      target
+      (and (map? target)
+        (string? (:path target))
+        (or (= (:type target) :writer-spec)
+          (= (:type target) :output-stream-spec)))
+      target
+      :else
+      (-invalid-argument fn-name
+        (str fn-name ": expected path string or writable doggo.io descriptor")
+        :target
+        "path string or matching doggo.io descriptor"
+        target))))
+
+(def ^:private -options-map
+  (fn [fn-name opts allowed-keys]
+    (cond
+      (empty? opts) {}
+      (and (= 1 (count opts))
+        (map? (first opts)))
+      (let [options (first opts)]
+        (doseq [key (keys options)]
+          (if (contains? allowed-keys key)
+            nil
+            (-invalid-argument fn-name
+              (str fn-name ": unsupported option " key))))
+        options)
+      :else
+      (-invalid-argument fn-name
+        (str fn-name ": expected final option map")
+        :options
+        "map"
+        (if (= 1 (count opts)) (first opts) opts)))))
+
+(def ^:private -option-bool
+  (fn [fn-name options key default]
+    (if (contains? options key)
+      (let [value (get options key)]
+        (if (boolean? value)
+          value
+          (-invalid-argument fn-name
+            (str fn-name ": option " key " must be boolean"))))
+      default)))
+
+(def ^:private -type-name
+  (fn [value]
+    (if (nil? value) "nil" (type-name value))))
+
+(def ^:private -require-string
+  (fn [fn-name label value]
+    (if (string? value)
+      value
+      (-invalid-argument fn-name
+        (str fn-name ": "
+          label
+          " must be a string, got "
+          (-type-name value))))))
+
+(def ^:private -require-string-or-nil
+  (fn [fn-name label value]
+    (if (nil? value)
+      nil
+      (-require-string fn-name label value))))
+
+(def ^:private -normalize-file-path
+  (fn [fn-name label path]
+    (io-file* (-require-string fn-name label path))))
+
+(def ^:private -read-source
+  (fn [source options]
+    (let [spec (-source-spec 'doggo.io/slurp source)
+        binary (if (contains? options :binary)
+          (:binary options)
+          (if (:binary spec) true false))]
+      (cond
+        (= (:type spec) :process-reader)
+        (process-stream-slurp* spec binary)
+
+        binary
+        (slurp (:path spec) {:binary true})
+
+        :else
+        (slurp (:path spec))))))
+
+(def ^:private -write-target
+  (fn [target content options]
+    (let [spec (-target-spec 'doggo.io/spit target)
+        binary (if (contains? options :binary)
+          (:binary options)
+          (if (:binary spec) true false))]
+      (cond
+        (= (:type spec) :process-writer)
+        (process-stream-spit* spec content binary)
+
+        binary
+        (spit (:path spec)
+          content
+          {:binary true
+            :append (if (contains? spec :append)
+              (:append spec)
+              (-option-bool 'doggo.io/spit options :append false))})
+
+        :else
+        (spit (:path spec)
+          content
+          {:append (if (contains? spec :append)
+              (:append spec)
+              (-option-bool 'doggo.io/spit options :append false))})))))
+
+(def ^:private -slurp
+  (fn
+    ([source] (-read-source source {}))
+    ([source options]
+      (-read-source source
+        (-options-map 'doggo.io/slurp [options] #{:binary})))))
+
+(def ^:private -spit
+  (fn
+    ([target content] (-write-target target content {}))
+    ([target content options]
+      (-write-target target content
+        (-options-map 'doggo.io/spit [options] #{:binary :append})))))
+
+(def slurp -slurp)
+(def spit -spit)
+
+(def ^:private -join-path
+  (fn [& parts]
+    (apply io-file*
+      (map (fn [part]
+          (-require-string 'doggo.io/join-path "path part" part))
+        parts))))
+
+(def ^:private -normalize-relative-path
+  (fn [path]
+    (io-normalize-relative-path* path)))
+
+(def ^:private -as-url
+  (fn [path]
+    (io-as-url* path)))
+
+(def ^:private -basename
+  (fn [path]
+    (io-basename* (-require-string 'doggo.io/basename "path" path))))
+
+(def ^:private -dirname
+  (fn [path]
+    (io-dirname* (-require-string 'doggo.io/dirname "path" path))))
+
+(def ^:private -extension
+  (fn [path]
+    (io-extension* (-require-string 'doggo.io/extension "path" path))))
+
+(def ^:private -normalize
+  (fn [path]
+    (io-normalize* (-require-string 'doggo.io/normalize "path" path))))
+
+(def ^:private -absolute?
+  (fn [path]
+    (io-absolute?* (-require-string 'doggo.io/absolute? "path" path))))
+
+(def ^:private -absolute
+  (fn [path]
+    (io-absolute* (-require-string 'doggo.io/absolute "path" path))))
+
+(def ^:private -relative-to
+  (fn [base path]
+    (io-relative-to* (-require-string 'doggo.io/relative-to "base" base)
+      (-require-string 'doggo.io/relative-to "path" path))))
+
+(def ^:private -reader-spec
+  (fn [path]
+    {:type :reader-spec
+      :path (-normalize-file-path 'doggo.io/reader-spec "path" path)
+      :binary false}))
+
+(def ^:private -writer-spec
+  (fn
+    ([path] (-writer-spec path {}))
+    ([path options]
+      (let [validated (-options-map 'doggo.io/writer-spec [options] #{:append})]
+        {:type :writer-spec
+          :path (-normalize-file-path 'doggo.io/writer-spec "path" path)
+          :append (-option-bool 'doggo.io/writer-spec validated :append false)
+          :binary false}))))
+
+(def ^:private -input-stream-spec
+  (fn [path]
+    {:type :input-stream-spec
+      :path (-normalize-file-path 'doggo.io/input-stream-spec "path" path)
+      :binary true}))
+
+(def ^:private -output-stream-spec
+  (fn
+    ([path] (-output-stream-spec path {}))
+    ([path options]
+      (let [validated (-options-map 'doggo.io/output-stream-spec [options] #{:append})]
+        {:type :output-stream-spec
+          :path (-normalize-file-path 'doggo.io/output-stream-spec "path" path)
+          :append (-option-bool 'doggo.io/output-stream-spec validated :append false)
+          :binary true}))))
+
+(def ^:private -delete-entry
+  (fn
+    ([path] (-delete-entry path {}))
+    ([path options]
+      (let [validated (-options-map 'doggo.io/delete-entry [options] #{:silently})]
+        (io-delete-entry* (-normalize-file-path 'doggo.io/delete-entry "path" path)
+          (-option-bool 'doggo.io/delete-entry validated :silently false))))))
+
+(def ^:private -resource-path
+  (fn [name]
+    (resource-path* name)))
+
+(def ^:private -exists?
+  (fn [path]
+    (io-exists?* (-normalize-file-path 'doggo.io/exists? "path" path))))
+
+(def ^:private -file?
+  (fn [path]
+    (io-file?* (-normalize-file-path 'doggo.io/file? "path" path))))
+
+(def ^:private -directory?
+  (fn [path]
+    (io-directory?* (-normalize-file-path 'doggo.io/directory? "path" path))))
+
+(def ^:private -list-entries
+  (fn [path]
+    (io-list-entries* (-normalize-file-path 'doggo.io/list-entries "path" path))))
+
+(def ^:private -walk-options
+  (fn [opts]
+    (let [options (-options-map 'doggo.io/walk opts
+          #{:order :type :include-root :follow-symlinks :max-depth})
+        order (get options :order :pre)
+        type (get options :type :all)
+        include-root (if (contains? options :include-root)
+          (let [value (:include-root options)]
+            (if (boolean? value)
+              value
+              (-invalid-argument 'doggo.io/walk
+                "doggo.io/walk: option :include-root must be boolean")))
+          true)
+        follow-symlinks (if (contains? options :follow-symlinks)
+          (let [value (:follow-symlinks options)]
+            (if (boolean? value)
+              value
+              (-invalid-argument 'doggo.io/walk
+                "doggo.io/walk: option :follow-symlinks must be boolean")))
+          false)
+        max-depth (get options :max-depth nil)]
+      (if (or (= order :pre) (= order :post))
+        nil
+        (-invalid-argument 'doggo.io/walk
+          "doggo.io/walk: option :order must be :pre or :post"))
+      (if (or (= type :all) (= type :files) (= type :dirs))
+        nil
+        (-invalid-argument 'doggo.io/walk
+          "doggo.io/walk: option :type must be :all, :files, or :dirs"))
+      (if (or (nil? max-depth) (nat-int? max-depth))
+        nil
+        (-invalid-argument 'doggo.io/walk
+          "doggo.io/walk: option :max-depth must be a non-negative integer or nil"))
+      {:order order
+        :type type
+        :include-root include-root
+        :follow-symlinks follow-symlinks
+        :max-depth max-depth})))
+
+(def ^:private -walk
+  (fn
+    ([path] (-walk path {}))
+    ([path options]
+      (io-walk* (-normalize-file-path 'doggo.io/walk "path" path)
+        (-walk-options [options])))))
+
+(def ^:private -glob
+  (fn [pattern]
+    (io-glob* (-normalize-file-path 'doggo.io/glob "pattern" pattern))))
+
+(def ^:private -file-seq-helper
+  (fn [path]
+    (lazy-seq
+      (cons path
+        (if (try
+            (-directory? path)
+            (catch [e] false))
+          (mapcat -file-seq-helper
+            (try
+              (-list-entries path)
+              (catch [e] nil)))
+          nil)))))
+
+(def ^:private -file-seq
+  (fn [path]
+    (-file-seq-helper (-normalize-file-path 'doggo.io/file-seq "path" path))))
+
+(def ^:private -create-temp-file
+  (fn
+    ([] (-create-temp-file {}))
+    ([options]
+      (let [validated (-options-map 'doggo.io/create-temp-file [options] #{:prefix :suffix :dir})]
+        (io-create-temp-file* (-require-string-or-nil 'doggo.io/create-temp-file "prefix" (get validated :prefix nil))
+          (-require-string-or-nil 'doggo.io/create-temp-file "suffix" (get validated :suffix nil))
+          (-require-string-or-nil 'doggo.io/create-temp-file "dir" (get validated :dir nil)))))))
+
+(def ^:private -create-temp-dir
+  (fn
+    ([] (-create-temp-dir {}))
+    ([options]
+      (let [validated (-options-map 'doggo.io/create-temp-dir [options] #{:prefix :dir})]
+        (io-create-temp-dir* (-require-string-or-nil 'doggo.io/create-temp-dir "prefix" (get validated :prefix nil))
+          (-require-string-or-nil 'doggo.io/create-temp-dir "dir" (get validated :dir nil)))))))
+
+(def ^:private -make-parents
+  (fn [path]
+    (io-make-parents* (-normalize-file-path 'doggo.io/make-parents "path" path))))
+
+(def ^:private -tree-mutation-options
+  (fn [fn-name opts allowed-keys]
+    (-options-map fn-name opts allowed-keys)))
+
+(def ^:private -missing-option
+  (fn [fn-name options]
+    (let [value (get options :missing :error)]
+      (if (or (= value :error) (= value :ignore))
+        value
+        (-invalid-argument fn-name
+          (str fn-name ": option :missing must be :error or :ignore"))))))
+
+(def ^:private -overwrite-option
+  (fn [fn-name options]
+    (if (contains? options :overwrite)
+      (let [value (:overwrite options)]
+        (if (boolean? value)
+          value
+          (-invalid-argument fn-name
+            (str fn-name ": option :overwrite must be boolean"))))
+      false)))
+
+(def ^:private -mkdirs
+  (fn [path]
+    (io-mkdirs* (-normalize-file-path 'doggo.io/mkdirs "path" path))))
+
+(def ^:private -delete-tree
+  (fn
+    ([path] (-delete-tree path {}))
+    ([path option-map]
+      (let [options (-tree-mutation-options 'doggo.io/delete-tree [option-map] #{:missing})
+          missing (-missing-option 'doggo.io/delete-tree options)]
+        (io-delete-tree* (-normalize-file-path 'doggo.io/delete-tree "path" path)
+          (= missing :ignore))))))
+
+(def ^:private -copy-tree
+  (fn
+    ([src dst] (-copy-tree src dst {}))
+    ([src dst option-map]
+      (let [options (-tree-mutation-options 'doggo.io/copy-tree [option-map] #{:missing :overwrite})
+          overwrite (-overwrite-option 'doggo.io/copy-tree options)
+          missing (-missing-option 'doggo.io/copy-tree options)]
+        (io-copy-tree* (-normalize-file-path 'doggo.io/copy-tree "source" src)
+          (-normalize-file-path 'doggo.io/copy-tree "destination" dst)
+          overwrite
+          (= missing :ignore))))))
+
+(def ^:private -move
+  (fn
+    ([src dst] (-move src dst {}))
+    ([src dst option-map]
+      (let [options (-tree-mutation-options 'doggo.io/move [option-map] #{:missing :overwrite})
+          overwrite (-overwrite-option 'doggo.io/move options)
+          missing (-missing-option 'doggo.io/move options)]
+        (io-move* (-normalize-file-path 'doggo.io/move "source" src)
+          (-normalize-file-path 'doggo.io/move "destination" dst)
+          overwrite
+          (= missing :ignore))))))
+
+(def copy
+  (fn [from to]
+    (spit to (slurp from {:binary true}) {:binary true})))
+
+(def join-path -join-path)
+(def normalize-relative-path -normalize-relative-path)
+(def as-url -as-url)
+(def basename -basename)
+(def dirname -dirname)
+(def extension -extension)
+(def normalize -normalize)
+(def absolute? -absolute?)
+(def absolute -absolute)
+(def relative-to -relative-to)
+(def reader-spec -reader-spec)
+(def writer-spec -writer-spec)
+(def input-stream-spec -input-stream-spec)
+(def output-stream-spec -output-stream-spec)
+(def delete-entry -delete-entry)
+(def resource-path -resource-path)
+(def exists? -exists?)
+(def file? -file?)
+(def directory? -directory?)
+(def list-entries -list-entries)
+(def walk -walk)
+(def glob -glob)
+(def file-seq -file-seq)
+(def create-temp-file -create-temp-file)
+(def create-temp-dir -create-temp-dir)
+(def make-parents -make-parents)
+(def mkdirs -mkdirs)
+(def delete-tree -delete-tree)
+(def copy-tree -copy-tree)
+(def move -move)

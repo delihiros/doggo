@@ -1,0 +1,30 @@
+; =====================
+; Doggo Template Library
+; =====================
+(ns doggo.template
+  (:require [doggo.walk :as walk]))
+
+(def apply-template
+  (fn [argv expr values]
+    (if (not (vector? argv))
+      (throw (ex-info "doggo.template/apply-template: argv must be a vector"
+          {:kind :invalid-argument
+            :function 'doggo.template/apply-template
+            :argument :argv
+            :actual argv}))
+      (if (not (every? symbol? argv))
+        (throw (ex-info "doggo.template/apply-template: argv must contain only symbols"
+            {:kind :invalid-argument
+              :function 'doggo.template/apply-template
+              :argument :argv
+              :actual argv}))
+        (walk/postwalk-replace (zipmap argv values) expr)))))
+
+(defmacro do-template [argv expr & values]
+  (let [argc (count argv)
+      groups (if (zero? argc)
+        []
+        (partition argc values))]
+    `(do ~@(map (fn [args]
+          (apply-template argv expr args))
+        groups))))

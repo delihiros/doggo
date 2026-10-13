@@ -1,0 +1,31 @@
+; =====================
+; Doggo Basis Library
+; =====================
+(ns doggo.basis)
+
+(def current-basis basis-current*)
+(def initial-basis basis-initial*)
+
+(def project-root
+  (fn []
+    (:project-root (current-basis))))
+
+(def module-name
+  (fn []
+    (:module-name (current-basis))))
+
+(def deps
+  (fn []
+    (:deps (current-basis))))
+
+(def lock-deps
+  (fn []
+    (:lock-deps (current-basis))))
+
+(def load-paths
+  (fn []
+    (:load-paths (current-basis))))
+
+(def generated-targets
+  (fn []
+    (:generated-targets (current-basis))))

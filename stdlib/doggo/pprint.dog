@@ -1,0 +1,756 @@
+; =====================
+; Doggo Pretty Printer
+; =====================
+(ns doggo.pprint
+  (:require [doggo.math :as math]
+    [doggo.string :as str]))
+
+(def ^:private -illegal-argument
+  (fn
+    ([fn-name message]
+      (-illegal-argument fn-name message {}))
+    ([fn-name message details]
+      (throw (ex-info message
+          (merge {:kind :invalid-argument
+              :function fn-name}
+            details))))))
+
+(def ^:private -type-name
+  (fn [value]
+    (if (nil? value) "nil" (type-name value))))
+
+(def ^:private -spaces
+  (fn [n]
+    (apply str (take n (repeat " ")))))
+
+(def ^:private -single-line?
+  (fn [s]
+    (not (str/includes? s "\n"))))
+
+(def ^:private -integer?
+  (fn [value]
+    (and (number? value)
+      (= value (math/round value)))))
+
+(def ^:private -column-after
+  (fn [current-column text]
+    (if (-single-line? text)
+      (+ current-column (count text))
+      (let [lines (str/split-lines text)]
+        (if (empty? lines)
+          0
+          (count (last lines)))))))
+
+(def ^:private -prefix-first-line
+  (fn [prefix block]
+    (let [lines (str/split-lines block)]
+      (if (empty? lines)
+        prefix
+        (str prefix
+          (first lines)
+          (if (empty? (rest lines))
+            ""
+            (str "\n" (str/join "\n" (rest lines)))))))))
+
+(def ^:private -option-map
+  (fn [fn-name opts]
+    (cond
+      (nil? opts) {}
+      (map? opts) opts
+      :else (-illegal-argument fn-name
+        (str fn-name ": expected option map")
+        {:argument :options
+          :expected "map"
+          :actual opts}))))
+
+(def ^:private -first-unsupported-option
+  (fn [opts allowed]
+    (loop [remaining (keys opts)]
+      (if (empty? remaining)
+        nil
+        (let [option (first remaining)]
+          (if (contains? allowed option)
+            (recur (rest remaining))
+            option))))))
+
+(def ^:private -require-positive-number-option
+  (fn [fn-name key opts]
+    (if (contains? opts key)
+      (let [value (get opts key)]
+        (cond
+          (not (number? value))
+          (-illegal-argument fn-name
+            (str fn-name ": option " key " must be number, got " (-type-name value)))
+
+          (not (pos? value))
+          (-illegal-argument fn-name
+            (str fn-name ": option " key " must be positive number, got " value))
+
+          :else value))
+      nil)))
+
+(def ^:private -require-indent-option
+  (fn [fn-name opts]
+    (if (contains? opts :indent)
+      (let [value (:indent opts)]
+        (if (and (number? value)
+            (not (neg? value))
+            (= value (math/round value)))
+          value
+          (-illegal-argument fn-name
+            (str fn-name
+              ": option :indent must be non-negative integer, got "
+              (-type-name value)))))
+      2)))
+
+(def ^:private -default-dispatch
+  (fn [_]
+    nil))
+
+(def ^:private -context-dispatch
+  (fn [context]
+    (:dispatch context)))
+
+
+(def ^:dynamic *printer-context* nil)
+(def ^:dynamic *printer-depth* 0)
+(def ^:dynamic *layout-ops* nil)
+(def ^:dynamic *pprint-dispatch* nil)
+(def ^:private *default-pprint-dispatch* (atom -default-dispatch))
+
+(def ^:private -default-printer-context
+  {:width nil
+    :right-margin nil
+    :indent 2
+    :dispatch -default-dispatch})
+
+(def ^:private -logical-block-option-keys
+  {:prefix true
+    :suffix true})
+
+(def ^:private -current-printer-context
+  (fn []
+    (if *printer-context*
+      *printer-context*
+      -default-printer-context)))
+
+(def ^:private -fits-inline-at-indent?
+  (fn [rendered context indent]
+    (let [width (:width context)]
+      (or (nil? width)
+        (and (-single-line? rendered)
+          (<= (count rendered)
+            (- width indent)))))))
+
+(def ^:private -normalize-dispatch
+  (fn [fn-name dispatch]
+    (if (fn? dispatch)
+      dispatch
+      (-illegal-argument fn-name
+        (str fn-name ": expected function, got " (-type-name dispatch))))))
+
+(def ^:private -ambient-dispatch
+  (fn []
+    (cond
+      (fn? *pprint-dispatch*) *pprint-dispatch*
+      (fn? @*default-pprint-dispatch*) @*default-pprint-dispatch*
+      :else -default-dispatch)))
+
+(def ^:private -build-logical-block-opts
+  (fn [fn-name raw-opts]
+    (let [opts (-option-map fn-name raw-opts)
+        unsupported (-first-unsupported-option opts -logical-block-option-keys)]
+      (if unsupported
+        (-illegal-argument fn-name
+          (str fn-name ": unsupported option " unsupported))
+        (let [prefix (if (contains? opts :prefix) (:prefix opts) "")
+            suffix (if (contains? opts :suffix) (:suffix opts) "")]
+          (if (not (string? prefix))
+            (-illegal-argument fn-name
+              (str fn-name ": option :prefix must be string, got " (-type-name prefix)))
+            (if (not (string? suffix))
+              (-illegal-argument fn-name
+                (str fn-name ": option :suffix must be string, got " (-type-name suffix)))
+              {:prefix prefix
+                :suffix suffix})))))))
+
+(def ^:private -append-layout!
+  (fn [fn-name op]
+    (if *layout-ops*
+      (do
+        (swap! *layout-ops* conj op)
+        nil)
+      (-illegal-argument fn-name
+        (str fn-name ": can only be used inside pprint-logical-block")))))
+
+(def ^:private -tab-kind
+  (fn [kind]
+    (if (or (= kind :line)
+        (= kind :line-relative))
+      kind
+      (-illegal-argument 'doggo.pprint/pprint-tab
+        (str "doggo.pprint/pprint-tab: unsupported tab kind " kind)))))
+
+(def ^:private -tab-colnum
+  (fn [colnum]
+    (if (and (-integer? colnum)
+        (not (neg? colnum)))
+      colnum
+      (-illegal-argument 'doggo.pprint/pprint-tab
+        (str "doggo.pprint/pprint-tab: colnum must be non-negative integer, got "
+          (-type-name colnum))))))
+
+(def ^:private -tab-colinc
+  (fn [colinc]
+    (if (and (-integer? colinc)
+        (pos? colinc))
+      colinc
+      (-illegal-argument 'doggo.pprint/pprint-tab
+        (str "doggo.pprint/pprint-tab: colinc must be positive integer, got "
+          (-type-name colinc))))))
+
+(def ^:private -line-tab-spaces
+  (fn [current-column colnum colinc]
+    (if (< current-column colnum)
+      (- colnum current-column)
+      (let [offset (mod (- current-column colnum) colinc)]
+        (if (= offset 0)
+          colinc
+          (- colinc offset))))))
+
+(def ^:private -line-relative-tab-spaces
+  (fn [current-column colnum colinc]
+    (let [target (+ current-column colnum)
+        offset (mod target colinc)]
+      (+ colnum
+        (if (= offset 0)
+          0
+          (- colinc offset))))))
+
+(def ^:private -tab-spaces
+  (fn [kind current-column colnum colinc]
+    (cond
+      (= kind :line)
+      (-line-tab-spaces current-column colnum colinc)
+
+      (= kind :line-relative)
+      (-line-relative-tab-spaces current-column colnum colinc)
+
+      :else 0)))
+
+(def ^:private -layout-owner
+  (letfn [(-flatten-layout-ops [ops context base-column]
+        (loop [remaining ops
+            rendered []
+            current-column base-column]
+          (if (empty? remaining)
+            (apply str rendered)
+            (let [op (first remaining)
+                kind (first op)]
+              (cond
+                (= kind :text)
+                (let [text (nth op 1)]
+                  (recur (rest remaining)
+                    (conj rendered text)
+                    (-column-after current-column text)))
+
+                (= kind :break)
+                (let [break-kind (nth op 2)]
+                  (if (= break-kind :mandatory)
+                    nil
+                    (let [separator (nth op 1)]
+                      (recur (rest remaining)
+                        (conj rendered separator)
+                        (-column-after current-column separator)))))
+
+                (= kind :indent)
+                (recur (rest remaining)
+                  rendered
+                  current-column)
+
+                (= kind :tab)
+                (let [spaces-count (-tab-spaces (nth op 1)
+                      current-column
+                      (nth op 2)
+                      (nth op 3))
+                    spaces (-spaces spaces-count)]
+                  (recur (rest remaining)
+                    (conj rendered spaces)
+                    (+ current-column spaces-count)))
+
+                (= kind :block)
+                (let [opts (nth op 1)
+                    nested (nth op 2)
+                    nested-rendered (-render-layout-block opts nested context current-column)]
+                  (if (-single-line? nested-rendered)
+                    (recur (rest remaining)
+                      (conj rendered nested-rendered)
+                      (-column-after current-column nested-rendered))
+                    nil))
+
+                :else
+                (recur (rest remaining)
+                  rendered
+                  current-column))))))
+
+      (-render-layout-ops-multiline [ops context base-indent default-indent]
+        (loop [remaining ops
+            rendered []
+            current-indent default-indent
+            current-column default-indent]
+          (if (empty? remaining)
+            {:text (apply str rendered)
+              :indent current-indent}
+            (let [op (first remaining)
+                kind (first op)]
+              (cond
+                (= kind :text)
+                (let [text (nth op 1)]
+                  (recur (rest remaining)
+                    (conj rendered text)
+                    current-indent
+                    (-column-after current-column text)))
+
+                (= kind :break)
+                (recur (rest remaining)
+                  (conj rendered "\n" (-spaces current-indent))
+                  current-indent
+                  current-indent)
+
+                (= kind :indent)
+                (recur (rest remaining)
+                  rendered
+                  (+ base-indent (nth op 1))
+                  current-column)
+
+                (= kind :tab)
+                (let [spaces-count (-tab-spaces (nth op 1)
+                      current-column
+                      (nth op 2)
+                      (nth op 3))
+                    spaces (-spaces spaces-count)]
+                  (recur (rest remaining)
+                    (conj rendered spaces)
+                    current-indent
+                    (+ current-column spaces-count)))
+
+                (= kind :block)
+                (let [opts (nth op 1)
+                    nested (nth op 2)
+                    nested-rendered (-render-layout-block opts nested context current-indent)]
+                  (recur (rest remaining)
+                    (conj rendered nested-rendered)
+                    current-indent
+                    (-column-after current-column nested-rendered)))
+
+                :else
+                (recur (rest remaining)
+                  rendered
+                  current-indent
+                  current-column))))))
+
+      (-render-layout-block [opts ops context base-indent]
+        (let [prefix (:prefix opts)
+            suffix (:suffix opts)
+            wrapper? (or (not (= prefix ""))
+              (not (= suffix "")))
+            child-indent (if wrapper?
+              (+ base-indent (:indent context))
+              base-indent)
+            inline-body (-flatten-layout-ops ops context (+ base-indent (count prefix)))
+            inline (if inline-body
+              (str prefix inline-body suffix)
+              nil)]
+          (if (or (empty? ops)
+              (and inline
+                (-fits-inline-at-indent? inline context base-indent)))
+            (or inline (str prefix suffix))
+            (let [body-state (-render-layout-ops-multiline ops context base-indent child-indent)
+                body (:text body-state)]
+              (if wrapper?
+                (str prefix
+                  "\n"
+                  (-spaces child-indent)
+                  body
+                  "\n"
+                  (-spaces base-indent)
+                  suffix)
+                body)))))]
+    {:flatten -flatten-layout-ops
+      :multiline -render-layout-ops-multiline
+      :render-block -render-layout-block}))
+
+(def ^:private -flatten-layout-ops (:flatten -layout-owner))
+(def ^:private -render-layout-ops-multiline (:multiline -layout-owner))
+(def ^:private -render-layout-block (:render-block -layout-owner))
+
+(def ^:private -layout-join-ops
+  (fn [parts inline-separator]
+    (loop [remaining parts
+        ops []]
+      (if (empty? remaining)
+        ops
+        (recur (rest remaining)
+          (if (empty? (rest remaining))
+            (conj ops [:text (first remaining)])
+            (conj ops [:text (first remaining)] [:break inline-separator :linear])))))))
+
+(def write-out
+  (fn [value]
+    (-append-layout! 'doggo.pprint/write-out [:text (str value)])))
+
+(def pprint-newline
+  (fn [kind]
+    (if (or (= kind :linear)
+        (= kind :mandatory))
+      (-append-layout! 'doggo.pprint/pprint-newline [:break " " kind])
+      (-illegal-argument 'doggo.pprint/pprint-newline
+        (str "doggo.pprint/pprint-newline: unsupported newline kind " kind)))))
+
+(def pprint-indent
+  (fn [n]
+    (if (and (-integer? n)
+        (not (neg? n)))
+      (-append-layout! 'doggo.pprint/pprint-indent [:indent n])
+      (-illegal-argument 'doggo.pprint/pprint-indent
+        (str "doggo.pprint/pprint-indent: expected non-negative integer, got " (-type-name n))))))
+
+(def pprint-tab
+  (fn [kind colnum colinc]
+    (-append-layout! 'doggo.pprint/pprint-tab
+      [:tab (-tab-kind kind)
+        (-tab-colnum colnum)
+        (-tab-colinc colinc)])))
+
+(def pprint-logical-block
+  (fn [opts f]
+    (let [block-opts (-build-logical-block-opts 'doggo.pprint/pprint-logical-block opts)
+        context (-current-printer-context)
+        outer-ops *layout-ops*
+        base-indent (* *printer-depth* (:indent context))]
+      (if (not (fn? f))
+        (-illegal-argument 'doggo.pprint/pprint-logical-block
+          (str "doggo.pprint/pprint-logical-block: expected function, got " (-type-name f)))
+        (let [ops (atom [])]
+          (binding [*layout-ops* ops]
+            (f))
+          (if outer-ops
+            (do
+              (swap! outer-ops conj [:block block-opts @ops])
+              nil)
+            (-render-layout-block block-opts @ops context base-indent)))))))
+
+(def ^:private -require-dispatch-option
+  (fn [fn-name opts]
+    (if (contains? opts :dispatch)
+      (let [dispatch (:dispatch opts)]
+        (if (fn? dispatch)
+          dispatch
+          (-illegal-argument fn-name
+            (str fn-name
+              ": option :dispatch must be function, got "
+              (-type-name dispatch)))))
+      (-ambient-dispatch))))
+
+(def set-pprint-dispatch!
+  (fn [dispatch]
+    (reset! *default-pprint-dispatch*
+      (-normalize-dispatch 'doggo.pprint/set-pprint-dispatch! dispatch))
+    nil))
+
+(defmacro with-pprint-dispatch [dispatch & body]
+  `(let [dispatch# (-normalize-dispatch 'doggo.pprint/with-pprint-dispatch ~dispatch)]
+    (binding [*pprint-dispatch* dispatch#]
+      (do ~@body))))
+
+(def ^:private -build-context
+  (fn [fn-name raw-opts allowed]
+    (let [opts (-option-map fn-name raw-opts)
+        unsupported (-first-unsupported-option opts allowed)]
+      (if unsupported
+        (-illegal-argument fn-name
+          (str fn-name ": unsupported option " unsupported))
+        (let [width-value (if (contains? allowed :width)
+              (-require-positive-number-option fn-name :width opts)
+              nil)
+            right-margin-value (if (contains? allowed :right-margin)
+              (-require-positive-number-option fn-name :right-margin opts)
+              nil)
+            indent (if (contains? allowed :indent)
+              (-require-indent-option fn-name opts)
+              nil)
+            dispatch (if (contains? allowed :dispatch)
+              (-require-dispatch-option fn-name opts)
+              -default-dispatch)
+            width (if (contains? opts :width)
+              width-value
+              right-margin-value)
+            right-margin (if (contains? opts :right-margin)
+              right-margin-value
+              width-value)]
+          (if (and (contains? opts :width)
+              (contains? opts :right-margin)
+              (not (= width-value right-margin-value)))
+            (-illegal-argument fn-name
+              (str fn-name ": options :width and :right-margin must match when both are provided"))
+            {:width width
+              :right-margin right-margin
+              :indent indent
+              :dispatch dispatch}))))))
+
+(def ^:private -render-option-keys
+  {:width true
+    :right-margin true
+    :indent true
+    :dispatch true})
+
+(def ^:private -flat-value
+  (fn [value]
+    (if (keyword? value)
+      (str value)
+      (pr-str value))))
+
+(def ^:private -map-like?
+  (fn [value]
+    (or (map? value)
+      (record? value))))
+
+(def ^:private -fits-inline?
+  (fn [rendered context depth]
+    (let [width (:width context)]
+      (or (nil? width)
+        (and (-single-line? rendered)
+          (<= (count rendered)
+            (- width (* depth (:indent context)))))))))
+
+(def ^:private -render-seq
+  (fn [render-fn open close items context depth]
+    (let [child-depth (inc depth)
+        rendered-items (map (fn [item] (render-fn item context child-depth)) items)
+        ops (-layout-join-ops rendered-items " ")]
+      (-render-layout-block {:prefix open :suffix close}
+        ops
+        context
+        (* depth (:indent context))))))
+
+(def ^:private -render-map-entry
+  (fn [render-fn entry context child-depth]
+    (let [rendered-key (render-fn (key entry) context child-depth)
+        rendered-value (render-fn (val entry) context child-depth)
+        inline-entry (str rendered-key " " rendered-value)]
+      (if (-fits-inline? inline-entry context child-depth)
+        inline-entry
+        (str rendered-key
+          "\n"
+          (-prefix-first-line (-spaces (* child-depth (:indent context)))
+            rendered-value))))))
+
+(def ^:private -render-map
+  (fn [render-fn value context depth]
+    (let [child-depth (inc depth)
+        entries (seq value)
+        rendered-entries (map (fn [entry]
+            (-render-map-entry render-fn entry context child-depth))
+          entries)
+        ops (-layout-join-ops rendered-entries ", ")]
+      (-render-layout-block {:prefix "{" :suffix "}"}
+        ops
+        context
+        (* depth (:indent context))))))
+
+(def ^:private -render-primitive
+  (fn [_render-fn value _context _depth]
+    (-flat-value value)))
+
+(def ^:private -render-vector
+  (fn [render-fn value context depth]
+    (-render-seq render-fn "[" "]" value context depth)))
+
+(def ^:private -render-list
+  (fn [render-fn value context depth]
+    (-render-seq render-fn "(" ")" value context depth)))
+
+(def ^:private -render-set
+  (fn [render-fn value context depth]
+    (-render-seq render-fn "#{" "}" value context depth)))
+
+(def ^:private -render-map-value
+  (fn [render-fn value context depth]
+    (-render-map render-fn value context depth)))
+
+(def ^:private -dispatch-key
+  (fn [value]
+    (cond
+      (vector? value) :vector
+      (list? value) :list
+      (set? value) :set
+      (-map-like? value) :map
+      :else :primitive)))
+
+(def ^:private -builtin-value-dispatch-table
+  {:primitive -render-primitive
+    :vector -render-vector
+    :list -render-list
+    :set -render-set
+    :map -render-map-value})
+
+(def ^:private -render-builtin-dispatch
+  (fn [value render-fn context depth]
+    (let [renderer (get -builtin-value-dispatch-table (-dispatch-key value))]
+      (renderer render-fn value context depth))))
+
+(def ^:private -render-table-cell-value
+  (fn [render-fn value context depth]
+    (-render-builtin-dispatch value render-fn context depth)))
+
+(def ^:private -builtin-dispatch-table
+  (assoc -builtin-value-dispatch-table
+    :table-cell -render-table-cell-value))
+
+(def ^:private -resolve-renderer
+  (fn [value & mode]
+    (if (= (first mode) :table-cell)
+      (get -builtin-dispatch-table :table-cell)
+      (get -builtin-dispatch-table (-dispatch-key value)))))
+
+(def ^:private -render-value
+  (fn [value context depth]
+    (let [custom (binding [*printer-context* context
+            *printer-depth* depth]
+          ((-context-dispatch context) value))]
+      (if (string? custom)
+        custom
+        (let [renderer (-resolve-renderer value)
+            rendered (renderer -render-value value context depth)
+            flat (-flat-value value)]
+          (if (or (nil? (:width context))
+              (-fits-inline? rendered context depth))
+            rendered
+            (if (= rendered flat)
+              flat
+              rendered)))))))
+
+(def ^:private -rendered-string
+  (fn [value context]
+    (-render-value value context 0)))
+
+(def ^:private -render-table-cell
+  (fn [value context depth]
+    (let [render-context (if context
+          context
+          {:width nil
+            :right-margin nil
+            :indent 2
+            :dispatch -default-dispatch})
+        renderer (-resolve-renderer value :table-cell)]
+      (renderer -render-value value render-context depth))))
+
+(def ^:private -pprint-str
+  (fn
+    ([value]
+      (-pprint-str value {}))
+    ([value opts]
+      (let [context (-build-context 'doggo.pprint/pprint-str
+            opts
+            -render-option-keys)]
+        (-rendered-string value context)))))
+
+(def pprint-str -pprint-str)
+
+(def ^:private -pad-right
+  (fn [s width]
+    (let [padding (- width (count s))]
+      (if (pos? padding)
+        (str s (apply str (take padding (repeat " "))))
+        s))))
+
+(def ^:private -render-line
+  (fn [cells widths]
+    (loop [i 0 pieces []]
+      (if (< i (count cells))
+        (recur (inc i)
+          (conj pieces
+            (-pad-right (nth cells i)
+              (nth widths i))))
+        (str "| " (str/join " | " pieces) " |")))))
+
+(def ^:private -table-widths
+  (fn [headers rows context]
+    (loop [remaining headers widths []]
+      (if (empty? remaining)
+        widths
+        (let [header (first remaining)
+            width (loop [row-seq rows max-width (count (str header))]
+              (if (empty? row-seq)
+                max-width
+                (let [cell-width (count (-render-table-cell (get (first row-seq) header)
+                        context
+                        0))]
+                  (recur (rest row-seq)
+                    (if (> cell-width max-width)
+                      cell-width
+                      max-width)))))]
+          (recur (rest remaining) (conj widths width)))))))
+
+(def ^:private -separator-line
+  (fn [widths]
+    (loop [remaining widths pieces []]
+      (if (empty? remaining)
+        (str "|-" (str/join "-+-" pieces) "-|")
+        (recur (rest remaining)
+          (conj pieces
+            (apply str (take (first remaining) (repeat "-")))))))))
+
+(def ^:private -row-lines
+  (fn [headers widths rows context]
+    (loop [remaining rows lines []]
+      (if (empty? remaining)
+        lines
+        (let [row (first remaining)
+            cells (loop [remaining-headers headers acc []]
+              (if (empty? remaining-headers)
+                acc
+                (recur (rest remaining-headers)
+                  (conj acc
+                    (-render-table-cell (get row (first remaining-headers))
+                      context
+                      0)))))]
+          (recur (rest remaining)
+            (conj lines (-render-line cells widths))))))))
+
+(def ^:private -table-string
+  (fn [headers rows context]
+    (let [widths (-table-widths headers rows context)
+        header-line (-render-line (map str headers) widths)
+        separator-line (-separator-line widths)
+        row-lines (-row-lines headers widths rows context)]
+      (str "\n"
+        header-line
+        "\n"
+        separator-line
+        (if (empty? row-lines)
+          "\n"
+          (str "\n" (str/join "\n" row-lines) "\n"))))))
+
+(def pprint
+  (fn
+    ([value]
+      (pprint value {}))
+    ([value opts]
+      (let [context (-build-context 'doggo.pprint/pprint
+            opts
+            -render-option-keys)]
+        (println (-rendered-string value context)))
+      nil)))
+
+(def table-str
+  (fn
+    ([rows]
+      (table-str (sort (keys (first rows))) rows))
+    ([headers rows]
+      (let [render-context (assoc
+            (-build-context 'doggo.pprint/table-str nil {})
+            :width nil
+            :right-margin nil
+            :indent 2)]
+        (-table-string headers rows render-context)))))

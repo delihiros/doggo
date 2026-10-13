@@ -1,0 +1,8 @@
+; =====================
+; Doggo Data Library
+; =====================
+(ns doggo.data)
+
+(def diff
+  (fn [a b]
+    (data-diff* a b)))

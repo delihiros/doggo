@@ -1,0 +1,312 @@
+; =====================
+; doggo.io tests
+; =====================
+(ns doggo.io-test
+  (:require [doggo.io :as io]
+    [doggo.os :as os]
+    [doggo.string :as str]
+    [doggo.test :as t]))
+
+(def io-test-dir
+  (io/join-path (os/system-temp-dir) (str "doggo-io-test-" (nano-time))))
+
+(def io-test-path
+  (io/join-path io-test-dir "root.txt"))
+
+(def io-copy-path
+  (io/join-path io-test-dir "copy.txt"))
+
+(def io-stream-path
+  (io/join-path io-test-dir "stream.txt"))
+
+(def io-overwrite-path
+  (io/join-path io-test-dir "overwrite.txt"))
+
+(def io-missing-path
+  (io/join-path io-test-dir "missing.txt"))
+
+(def io-nested-path
+  (io/join-path io-test-dir "nested" "deep" "file.txt"))
+
+(def io-list-dir
+  (io/join-path io-test-dir "listing"))
+
+(def io-seq-dir
+  (io/join-path io-test-dir "tree"))
+
+(t/deftest io-copy-and-text-helpers
+  (io/make-parents io-test-path)
+  (io/spit io-test-path "hello stdlib")
+  (t/is (= io-test-path (io/normalize io-test-path)))
+  (t/is (= (io/join-path "nested" "deep" "file.txt")
+      (io/normalize-relative-path "nested/deep/file.txt")))
+  (t/is (str/starts-with? (io/as-url io-test-path) "file://"))
+  (t/is (= "hello stdlib" (io/slurp io-test-path)))
+  (io/copy io-test-path io-copy-path)
+  (t/is (= "hello stdlib" (io/slurp io-copy-path)))
+  (io/copy (io/reader-spec io-test-path) (io/writer-spec io-stream-path))
+  (t/is (= "hello stdlib" (io/slurp io-stream-path)))
+  (io/copy (io/input-stream-spec io-test-path) (io/output-stream-spec io-copy-path))
+  (t/is (= "hello stdlib" (io/slurp io-copy-path)))
+  (io/spit io-overwrite-path "old")
+  (io/copy (io/reader-spec io-test-path) (io/writer-spec io-overwrite-path {:append false}))
+  (t/is (= "hello stdlib" (io/slurp io-overwrite-path)))
+  (io/spit io-overwrite-path "old")
+  (io/copy (io/reader-spec io-test-path) (io/writer-spec io-overwrite-path {:append false}))
+  (t/is (= "hello stdlib" (io/slurp io-overwrite-path)))
+  (io/spit io-overwrite-path "old")
+  (io/copy (io/input-stream-spec io-test-path) (io/output-stream-spec io-overwrite-path {:append false}))
+  (t/is (= "hello stdlib" (io/slurp io-overwrite-path)))
+  (io/spit io-overwrite-path "old")
+  (io/copy (io/input-stream-spec io-test-path) (io/output-stream-spec io-overwrite-path {:append false}))
+  (t/is (= "hello stdlib" (io/slurp io-overwrite-path)))
+  (io/make-parents io-nested-path)
+  (io/spit io-nested-path "nested")
+  (t/is (= "nested" (io/slurp io-nested-path)))
+  (io/delete-entry io-stream-path)
+  (t/is (= nil (io/delete-entry io-missing-path {:silently true})))
+  (t/is (= :missing
+      (try
+        (io/slurp io-stream-path)
+        :present
+        (catch [e] :missing)))))
+
+(t/deftest io-spit-honors-append-for-string-targets
+  (io/make-parents io-overwrite-path)
+  (io/spit io-overwrite-path "a")
+  (io/spit io-overwrite-path "b" {:append true})
+  (t/is (= "ab" (io/slurp io-overwrite-path))))
+
+(t/deftest io-resource-prefers-project-resource
+  (let [path (io/resource-path "doggo/io/resource.txt")]
+    (t/is (string? path))
+    (t/is (= "doggo project resource\n" (io/slurp path)))))
+
+(t/deftest io-temp-and-path-helpers
+  (io/make-parents (io/join-path io-test-dir "anchor.txt"))
+  (let [tmp-file (io/create-temp-file {:prefix "doggo-io-" :suffix ".txt" :dir io-test-dir})
+      tmp-dir (io/create-temp-dir {:prefix "doggo-dir-" :dir io-test-dir})
+      file-a (io/join-path io-list-dir "a.txt")
+      file-b (io/join-path io-list-dir "b.txt")
+      dir-c (io/join-path io-list-dir "c")]
+    (t/is (io/exists? tmp-file))
+    (t/is (io/file? tmp-file))
+    (t/is (not (io/directory? tmp-file)))
+    (t/is (str/starts-with? tmp-file io-test-dir))
+    (t/is (str/ends-with? tmp-file ".txt"))
+    (t/is (io/exists? tmp-dir))
+    (t/is (io/directory? tmp-dir))
+    (t/is (not (io/file? tmp-dir)))
+    (io/make-parents file-a)
+    (io/spit file-a "a")
+    (io/spit file-b "b")
+    (io/make-parents (io/join-path dir-c "placeholder.txt"))
+    (t/is (= [file-a file-b dir-c]
+        (io/list-entries io-list-dir)))
+    (t/is (= false (io/exists? (io/join-path io-test-dir "missing"))))))
+
+(t/deftest io-file-seq-walks-depth-first-and-includes-root
+  (let [root io-seq-dir
+      child-a (io/join-path root "a.txt")
+      child-dir (io/join-path root "sub")
+      child-b (io/join-path child-dir "b.txt")
+      missing (io/join-path root "missing")]
+    (io/make-parents child-b)
+    (io/spit child-a "a")
+    (io/spit child-b "b")
+    (t/is (= [root child-a child-dir child-b]
+        (vec (io/file-seq root))))
+    (t/is (= [child-a]
+        (vec (io/file-seq child-a))))
+    (t/is (= [missing]
+        (vec (io/file-seq missing))))))
+
+(t/deftest io-walk-and-glob-surface
+  (let [root (io/join-path io-test-dir "walk-tree")
+      child-a (io/join-path root "a.txt")
+      empty-dir (io/join-path root "empty")
+      child-dir (io/join-path root "sub")
+      child-b (io/join-path child-dir "b.txt")
+      child-c (io/join-path child-dir "c.log")]
+    (io/make-parents child-b)
+    (io/spit child-a "a")
+    (io/spit child-b "b")
+    (io/spit child-c "c")
+    (io/mkdirs empty-dir)
+    (t/is (= [root child-a empty-dir child-dir child-b child-c]
+        (vec (io/walk root))))
+    (t/is (= [child-a empty-dir child-b child-c child-dir root]
+        (vec (io/walk root {:order :post}))))
+    (t/is (= [child-a child-b child-c]
+        (vec (io/walk root {:type :files}))))
+    (t/is (= [root empty-dir child-dir]
+        (vec (io/walk root {:type :dirs}))))
+    (t/is (= [child-a empty-dir child-dir child-b child-c]
+        (vec (io/walk root {:include-root false}))))
+    (t/is (= [root child-a empty-dir child-dir]
+        (vec (io/walk root {:max-depth 1}))))
+    (t/is (= [child-a]
+        (io/glob (io/join-path root "*.txt"))))
+    (t/is (= [child-b child-c]
+        (io/glob (io/join-path root "sub" "*"))))
+    (t/is (= []
+        (io/glob (io/join-path root "*.missing"))))))
+
+(t/deftest io-walk-and-glob-reject-invalid-input
+  (t/is (t/thrown-with-msg?
+      #"doggo.io/walk: path must be a string"
+      (io/walk :bad)))
+  (t/is (t/thrown-with-msg?
+      #"doggo.io/walk: option :order must be :pre or :post"
+      (io/walk "/tmp" {:order :sideways})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.io/walk: option :type must be :all, :files, or :dirs"
+      (io/walk "/tmp" {:type :weird})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.io/walk: option :include-root must be boolean"
+      (io/walk "/tmp" {:include-root :yes})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.io/walk: option :max-depth must be a non-negative integer or nil"
+      (io/walk "/tmp" {:max-depth "x"})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.io/walk: option :follow-symlinks must be boolean"
+      (io/walk "/tmp" {:follow-symlinks :yes})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.io/glob: pattern must be a string"
+      (io/glob :bad))))
+
+(t/deftest io-tree-mutation-surface
+  (let [root (io/join-path io-test-dir "tree-mutation")
+      mkdir-target (io/join-path root "mkdirs" "deep" "dir")
+      delete-entry-target (io/join-path root "delete-entry.txt")
+      delete-dir-target (io/join-path root "delete-dir" "sub" "child.txt")
+      file-src (io/join-path root "file-src.txt")
+      file-dst (io/join-path root "file-dst.txt")
+      file-dst-dir (io/join-path root "file-dst-dir")
+      dir-src (io/join-path root "dir-src")
+      dir-src-a (io/join-path dir-src "a.txt")
+      dir-src-b (io/join-path dir-src "sub" "b.txt")
+      dir-dst (io/join-path root "dir-dst")
+      dir-dst-a (io/join-path dir-dst "a.txt")
+      dir-dst-keep (io/join-path dir-dst "keep.txt")
+      move-src (io/join-path root "move-src.txt")
+      move-dst-dir (io/join-path root "move-dst-dir")]
+    (t/is (= mkdir-target (io/mkdirs mkdir-target)))
+    (t/is (= mkdir-target (io/mkdirs mkdir-target)))
+
+    (io/spit delete-entry-target "x")
+    (io/make-parents delete-dir-target)
+    (io/spit delete-dir-target "x")
+    (t/is (= nil (io/delete-tree delete-entry-target)))
+    (t/is (= nil (io/delete-tree (io/join-path root "missing") {:missing :ignore})))
+    (t/is (= nil (io/delete-tree (io/join-path root "missing-2") {:missing :ignore})))
+    (t/is (= nil (io/delete-tree (io/join-path root "delete-dir"))))
+    (t/is (= :error
+        (try
+          (io/delete-tree (io/join-path root "missing-3"))
+          :unexpected
+          (catch [e] :error))))
+
+    (io/spit file-src "file-src")
+    (io/spit file-dst "old")
+    (t/is (= :overwrite-error
+        (try
+          (io/copy-tree file-src file-dst)
+          :unexpected
+          (catch [e] :overwrite-error))))
+    (t/is (= nil (io/copy-tree file-src file-dst {:overwrite true})))
+    (t/is (= "file-src" (io/slurp file-dst)))
+    (io/mkdirs file-dst-dir)
+    (t/is (= nil (io/copy-tree file-src file-dst-dir)))
+    (t/is (= "file-src" (io/slurp (io/join-path file-dst-dir "file-src.txt"))))
+
+    (io/make-parents dir-src-a)
+    (io/spit dir-src-a "dir-a")
+    (io/make-parents dir-src-b)
+    (io/spit dir-src-b "dir-b")
+    (io/make-parents dir-dst-a)
+    (io/spit dir-dst-a "old-a")
+    (io/spit dir-dst-keep "keep")
+    (t/is (= :merge-collision
+        (try
+          (io/copy-tree dir-src dir-dst)
+          :unexpected
+          (catch [e] :merge-collision))))
+    (t/is (= nil (io/copy-tree dir-src dir-dst {:overwrite true})))
+    (t/is (= "dir-a" (io/slurp dir-dst-a)))
+    (t/is (= "keep" (io/slurp dir-dst-keep)))
+    (t/is (= "dir-b" (io/slurp (io/join-path dir-dst "sub" "b.txt"))))
+
+    (io/spit move-src "move-me")
+    (io/mkdirs move-dst-dir)
+    (t/is (= nil (io/move move-src move-dst-dir)))
+    (t/is (= "move-me" (io/slurp (io/join-path move-dst-dir "move-src.txt"))))
+    (t/is (= false (io/exists? move-src)))))
+
+(t/deftest io-tree-mutation-rejects-invalid-input
+  (t/is (t/thrown-with-msg?
+      #"doggo.io/mkdirs: path must be a string"
+      (io/mkdirs :bad)))
+  (t/is (t/thrown-with-msg?
+      #"doggo.io/delete-tree: option :missing must be :error or :ignore"
+      (io/delete-tree "/tmp" {:missing :weird})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.io/delete-tree: unsupported option :overwrite"
+      (io/delete-tree "/tmp/doggo-io-missing" {:overwrite true})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.io/copy-tree: option :overwrite must be boolean"
+      (io/copy-tree "/tmp/a" "/tmp/b" {:overwrite :yes})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.io/copy-tree: unsupported option :follow-symlinks"
+      (io/copy-tree "/tmp/a" "/tmp/b" {:follow-symlinks true})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.io/move: option :missing must be :error or :ignore"
+      (io/move "/tmp/a" "/tmp/b" {:missing :weird})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.io/move: unsupported option :follow-symlinks"
+      (io/move "/tmp/a" "/tmp/b" {:follow-symlinks true}))))
+
+(t/deftest io-tree-mutation-rejects-self-and-descendant-destinations
+  (let [root (io/join-path io-test-dir "tree-mutation-self")
+      file-src (io/join-path root "self.txt")
+      dir-src (io/join-path root "tree")
+      dir-src-child (io/join-path dir-src "child.txt")
+      dir-nested-dst (io/join-path dir-src "nested" "dst")]
+    (io/make-parents file-src)
+    (io/spit file-src "self")
+    (io/make-parents dir-src-child)
+    (io/spit dir-src-child "child")
+    (t/is (t/thrown-with-msg?
+        #"source and destination must be different"
+        (io/copy-tree file-src file-src {:overwrite true})))
+    (t/is (t/thrown-with-msg?
+        #"source and destination must be different"
+        (io/move file-src file-src {:overwrite true})))
+    (t/is (t/thrown-with-msg?
+        #"destination must not be the source or a descendant of the source"
+        (io/copy-tree dir-src dir-nested-dst)))
+    (t/is (t/thrown-with-msg?
+        #"destination must not be the source or a descendant of the source"
+        (io/move dir-src dir-nested-dst)))))
+
+(t/deftest io-preserves-literal-backslashes-on-unix
+  (if (= "windows" (os/os-name))
+    (t/is true)
+    (let [literal-dir (io/join-path io-test-dir "listing\\literal")
+        file-path (io/join-path literal-dir "child.txt")
+        _ (io/make-parents file-path)
+        _ (io/spit file-path "x")
+        listed (io/list-entries literal-dir)
+        tmp-file (io/create-temp-file {:prefix "doggo-io-" :dir literal-dir})
+        tmp-dir (io/create-temp-dir {:prefix "doggo-dir-" :dir literal-dir})]
+      (t/is (str/includes? literal-dir "\\"))
+      (t/is (str/includes? tmp-file "\\"))
+      (t/is (str/includes? tmp-dir "\\"))
+      (t/is (= [file-path] listed))
+      (t/is (io/exists? tmp-file))
+      (t/is (io/exists? tmp-dir)))))
+
+(t/deftest io-file-seq-rejects-invalid-input
+  (t/is (t/thrown-with-msg?
+      #"doggo.io/file-seq: path must be a string"
+      (io/file-seq :bad))))

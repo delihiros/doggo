@@ -1,0 +1,18 @@
+; =====================
+; doggo.uuid tests
+; =====================
+(ns doggo.uuid-test
+  (:require [doggo.test :as t]
+    [doggo.uuid :as uuid]))
+
+(t/deftest uuid-api
+  (let [parsed (uuid/parse "550E8400-E29B-41D4-A716-446655440000")
+      random (uuid/random)]
+    (t/is (= "550e8400-e29b-41d4-a716-446655440000" (str parsed)))
+    (t/is (uuid/uuid? parsed))
+    (t/is (uuid/uuid? random))
+    (t/is (not (uuid/uuid? "550e8400-e29b-41d4-a716-446655440000")))))
+
+(t/deftest rejects-invalid-uuid
+  (t/is (t/thrown-with-msg? #"doggo.uuid/parse"
+      (uuid/parse "not-a-uuid"))))

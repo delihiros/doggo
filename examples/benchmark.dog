@@ -1,0 +1,652 @@
+;; =============================================================================
+;; Doggo言語 ベンチマークスクリプト
+;; =============================================================================
+;;
+;; このスクリプトはDoggo言語の各種機能のパフォーマンスを測定します。
+;; 以下のコマンドで実行できます：
+;;
+;;   doggo mod sync
+;;   doggo build
+;;   doggo exec -- examples/benchmark.dog
+;;
+;; =============================================================================
+
+(require '[doggo.set :as set]
+  '[doggo.string :as string])
+
+(println "=== Doggo Benchmark Suite ===\n")
+
+;; -----------------------------------------------------------------------------
+;; 1. 数値計算ベンチマーク
+;; -----------------------------------------------------------------------------
+
+(println "--- 1. Numerical Computation ---")
+
+;; 単純な算術演算（10000回）
+(defn bench-arithmetic []
+  (loop [i 0 sum 0]
+    (if (< i 10000)
+      (recur (inc i) (+ sum (* i 2) (- i 1)))
+      sum)))
+
+(println "Arithmetic (10000 iterations):")
+(time (bench-arithmetic))
+
+;; フィボナッチ数列（再帰版）
+(defn fib [n]
+  (if (<= n 1)
+    n
+    (+ (fib (dec n)) (fib (- n 2)))))
+
+(println "\nFibonacci (recursive, n=25):")
+(time (fib 25))
+
+;; フィボナッチ数列（末尾再帰版）
+(defn fib-tail [n]
+  (loop [a 0 b 1 cnt n]
+    (if (= cnt 0)
+      a
+      (recur b (+ a b) (dec cnt)))))
+
+(println "\nFibonacci (tail-recursive, n=90):")
+(time (fib-tail 90))
+
+;; 階乗計算
+(defn factorial [n]
+  (loop [cnt n acc 1]
+    (if (<= cnt 1)
+      acc
+      (recur (dec cnt) (* acc cnt)))))
+
+(println "\nFactorial (n=20):")
+(time (factorial 20))
+
+;; -----------------------------------------------------------------------------
+;; 2. リスト操作ベンチマーク
+;; -----------------------------------------------------------------------------
+
+(println "\n--- 2. List Operations ---")
+
+;; リストの構築
+(defn build-list [n]
+  (loop [i 0 lst '()]
+    (if (< i n)
+      (recur (inc i) (cons i lst))
+      lst)))
+
+(println "Build list (1000 elements):")
+(time (build-list 1000))
+
+;; リストのトラバース
+(defn traverse-list [lst]
+  (loop [l lst sum 0]
+    (if (empty? l)
+      sum
+      (recur (rest l) (+ sum (first l))))))
+
+(def test-list (build-list 1000))
+(println "\nTraverse list (1000 elements):")
+(time (traverse-list test-list))
+
+;; -----------------------------------------------------------------------------
+;; 3. ベクター操作ベンチマーク
+;; -----------------------------------------------------------------------------
+
+(println "\n--- 3. Vector Operations ---")
+
+;; ベクターの構築
+(defn build-vector [n]
+  (loop [i 0 v []]
+    (if (< i n)
+      (recur (inc i) (conj v i))
+      v)))
+
+(println "Build vector (1000 elements):")
+(time (build-vector 1000))
+
+;; ベクターのインデックスアクセス
+(defn access-vector [v n]
+  (loop [i 0 sum 0]
+    (if (< i n)
+      (recur (inc i) (+ sum (nth v (mod i (count v)))))
+      sum)))
+
+(def test-vec (build-vector 100))
+(println "\nVector index access (10000 times):")
+(time (access-vector test-vec 10000))
+
+;; -----------------------------------------------------------------------------
+;; 4. マップ操作ベンチマーク
+;; -----------------------------------------------------------------------------
+
+(println "\n--- 4. Map Operations ---")
+
+;; マップの構築
+(defn build-map [n]
+  (loop [i 0 m {}]
+    (if (< i n)
+      (recur (inc i) (assoc m (keyword (str "key" i)) i))
+      m)))
+
+(println "Build map (500 entries):")
+(time (build-map 500))
+
+;; マップのルックアップ
+(defn lookup-map [m n]
+  (loop [i 0 sum 0]
+    (if (< i n)
+      (let [key (keyword (str "key" (mod i 500)))]
+        (recur (inc i) (+ sum (or (get m key) 0))))
+      sum)))
+
+(def test-map (build-map 500))
+(println "\nMap lookup (5000 times):")
+(time (lookup-map test-map 5000))
+
+;; -----------------------------------------------------------------------------
+;; 5. 高階関数ベンチマーク
+;; -----------------------------------------------------------------------------
+
+(println "\n--- 5. Higher-Order Functions ---")
+
+;; range生成
+(println "Generate range (1000):")
+(time (doall (range 1000)))
+
+;; map関数
+(println "\nMap over range (1000):")
+(time (doall (map inc (range 1000))))
+
+;; filter関数
+(println "\nFilter range (1000):")
+(time (doall (filter even? (range 1000))))
+
+;; reduce関数
+(println "\nReduce range (10000):")
+(time (reduce + (range 10000)))
+
+;; map + filter + reduce パイプライン
+(println "\nPipeline (map + filter + reduce, 10000 elements):")
+(time
+  (->> (range 10000)
+    (map inc)
+    (filter even?)
+    (reduce +)))
+
+;; ユーザー定義関数での reduce
+(defn my-add [a b] (+ a b))
+
+(println "\nReduce with user-defined function (10000):")
+(time (reduce my-add 0 (range 10000)))
+
+;; ユーザー定義関数でのパイプライン
+(defn double-it [x] (* x 2))
+(defn is-big [x] (> x 5000))
+
+(println "\nPipeline with user-defined functions (10000):")
+(time
+  (->> (range 10000)
+    (map double-it)
+    (filter is-big)
+    (reduce my-add 0)))
+
+;; -----------------------------------------------------------------------------
+;; 6. 関数呼び出しベンチマーク
+;; -----------------------------------------------------------------------------
+
+(println "\n--- 6. Function Call Overhead ---")
+
+;; 単純な関数呼び出し
+(defn identity-fn [x] x)
+
+(defn call-many-times [f n]
+  (loop [i 0]
+    (when (< i n)
+      (f i)
+      (recur (inc i)))))
+
+(println "Function call (10000 times):")
+(time (call-many-times identity-fn 10000))
+
+;; クロージャ呼び出し
+(defn make-adder [x]
+  (fn [y] (+ x y)))
+
+(def add-10 (make-adder 10))
+
+(defn call-closure [f n]
+  (loop [i 0 sum 0]
+    (if (< i n)
+      (recur (inc i) (+ sum (f i)))
+      sum)))
+
+(println "\nClosure call (10000 times):")
+(time (call-closure add-10 10000))
+
+;; -----------------------------------------------------------------------------
+;; 7. 文字列操作ベンチマーク
+;; -----------------------------------------------------------------------------
+
+(println "\n--- 7. String Operations ---")
+
+;; 文字列連結
+(defn concat-strings [n]
+  (loop [i 0 s ""]
+    (if (< i n)
+      (recur (inc i) (str s "x"))
+      s)))
+
+(println "String concatenation (1000 times):")
+(time (concat-strings 1000))
+
+;; 文字列変換パイプライン
+(import "strings")
+
+(defn string-pipeline [n]
+  (loop [i 0 result ""]
+    (if (< i n)
+      (recur (inc i)
+        (strings/ToLower (strings/ToUpper (str "Test" i))))
+      result)))
+
+(println "\nString pipeline (1000 iterations):")
+(time (string-pipeline 1000))
+
+;; -----------------------------------------------------------------------------
+;; 8. Let束縛ベンチマーク
+;; -----------------------------------------------------------------------------
+
+(println "\n--- 8. Let Binding ---")
+
+(defn nested-let [n]
+  (loop [i 0 sum 0]
+    (if (< i n)
+      (let [a i
+          b (* a 2)
+          c (+ b 3)
+          d (* c c)]
+        (recur (inc i) (+ sum d)))
+      sum)))
+
+(println "Nested let (5000 iterations):")
+(time (nested-let 5000))
+
+;; -----------------------------------------------------------------------------
+;; 9. 条件分岐ベンチマーク
+;; -----------------------------------------------------------------------------
+
+(println "\n--- 9. Conditional Branching ---")
+
+(defn conditional-bench [n]
+  (loop [i 0 sum 0]
+    (if (< i n)
+      (recur (inc i)
+        (+ sum
+          (cond
+            (= (mod i 15) 0) 15
+            (= (mod i 5) 0) 5
+            (= (mod i 3) 0) 3
+            :else 1)))
+      sum)))
+
+(println "Cond evaluation (10000 iterations):")
+(time (conditional-bench 10000))
+
+;; -----------------------------------------------------------------------------
+;; 10. 総合ベンチマーク
+;; -----------------------------------------------------------------------------
+
+(println "\n--- 10. Comprehensive Benchmark ---")
+
+(defn comprehensive-bench []
+  (let [;; 数値計算
+      nums (range 1000)
+      sum1 (reduce + nums)
+
+      ;; リスト/ベクター操作
+      vec1 (reduce conj [] nums)
+      filtered (doall (filter even? vec1))
+      mapped (doall (map #(* % 2) filtered))
+
+      ;; マップ操作
+      m (loop [i 0 m {}]
+        (if (< i 100)
+          (recur (inc i) (assoc m (keyword (str "k" i)) i))
+          m))
+
+      ;; 最終集計
+      result {:sum sum1
+        :vec-count (count vec1)
+        :filtered-count (count filtered)
+        :mapped-sum (reduce + mapped)
+        :map-size (count m)}]
+    result))
+
+(println "Comprehensive benchmark:")
+(time
+  (loop [i 0]
+    (when (< i 10)
+      (comprehensive-bench)
+      (recur (inc i)))))
+
+;; -----------------------------------------------------------------------------
+;; 11. 新規コレクション操作ベンチマーク
+;; -----------------------------------------------------------------------------
+
+(println "\n--- 11. New Collection Operations ---")
+
+;; merge ベンチマーク
+(defn bench-merge [n]
+  (loop [i 0 result {}]
+    (if (< i n)
+      (recur (inc i) (merge result {(keyword (str "k" i)) i}))
+      result)))
+
+(println "Merge (500 iterations):")
+(time (bench-merge 500))
+
+;; get-in / assoc-in ベンチマーク
+(def deep-map {:a {:b {:c {:d {:e 1}}}}})
+
+(defn bench-get-in [n]
+  (loop [i 0 sum 0]
+    (if (< i n)
+      (recur (inc i) (+ sum (get-in deep-map [:a :b :c :d :e])))
+      sum)))
+
+(println "\nget-in deep access (10000 times):")
+(time (bench-get-in 10000))
+
+(defn bench-assoc-in [n]
+  (loop [i 0 m {}]
+    (if (< i n)
+      (recur (inc i) (assoc-in m [:level1 :level2 :level3] i))
+      m)))
+
+(println "\nassoc-in deep (1000 times):")
+(time (bench-assoc-in 1000))
+
+;; update / update-in ベンチマーク
+(defn bench-update [n]
+  (loop [i 0 m {:count 0}]
+    (if (< i n)
+      (recur (inc i) (update m :count inc))
+      m)))
+
+(println "\nupdate (5000 times):")
+(time (bench-update 5000))
+
+(defn bench-update-in [n]
+  (loop [i 0 m {:data {:count 0}}]
+    (if (< i n)
+      (recur (inc i) (update-in m [:data :count] inc))
+      m)))
+
+(println "\nupdate-in (5000 times):")
+(time (bench-update-in 5000))
+
+;; group-by ベンチマーク
+(defn bench-group-by [n]
+  (group-by even? (range n)))
+
+(println "\ngroup-by even? (10000 elements):")
+(time (bench-group-by 10000))
+
+;; sort / sort-by ベンチマーク
+(def unsorted-vec (reduce conj [] (reverse (range 1000))))
+
+(println "\nsort (1000 elements):")
+(time (sort unsorted-vec))
+
+(def sort-by-data (reduce conj []
+    (map (fn [i] {:id i :value (- 1000 i)})
+      (range 500))))
+
+(println "\nsort-by :value (500 elements):")
+(time (sort-by :value sort-by-data))
+
+;; -----------------------------------------------------------------------------
+;; 12. セット操作ベンチマーク
+;; -----------------------------------------------------------------------------
+
+(println "\n--- 12. Set Operations ---")
+
+;; range を先にベクターに変換してからセットに
+(def set-a (set (reduce conj [] (range 1000))))
+(def set-b (set (reduce conj [] (range 500 1500))))
+
+(println "union (1000 + 1000 elements):")
+(time (set/union set-a set-b))
+
+(println "\nintersection (1000 x 1000 elements):")
+(time (set/intersection set-a set-b))
+
+(println "\ndifference (1000 - 500 elements):")
+(time (set/difference set-a set-b))
+
+;; -----------------------------------------------------------------------------
+;; 13. 文字列操作ベンチマーク
+;; -----------------------------------------------------------------------------
+
+(println "\n--- 13. String Operations (format/replace) ---")
+
+(defn bench-format [n]
+  (loop [i 0 result ""]
+    (if (< i n)
+      (recur (inc i) (format "Item %d: value=%d" i (* i 2)))
+      result)))
+
+(println "format (1000 times):")
+(time (bench-format 1000))
+
+(defn bench-replace [n]
+  (loop [i 0 s "hello world hello world hello world"]
+    (if (< i n)
+      (recur (inc i) (string/replace s "hello" "hi"))
+      s)))
+
+(println "\nreplace (1000 times):")
+(time (bench-replace 1000))
+
+;; -----------------------------------------------------------------------------
+;; 14. ユーティリティ関数ベンチマーク
+;; -----------------------------------------------------------------------------
+
+(println "\n--- 14. Utility Functions ---")
+
+;; memoize ベンチマーク
+(defn expensive-fn [x]
+  (loop [i 0 sum 0]
+    (if (< i 100)
+      (recur (inc i) (+ sum (* x i)))
+      sum)))
+
+(def memoized-expensive (memoize expensive-fn))
+
+(println "Non-memoized (100 calls, same arg):")
+(time
+  (loop [i 0]
+    (when (< i 100)
+      (expensive-fn 42)
+      (recur (inc i)))))
+
+(println "\nMemoized (100 calls, same arg):")
+(time
+  (loop [i 0]
+    (when (< i 100)
+      (memoized-expensive 42)
+      (recur (inc i)))))
+
+;; complement ベンチマーク
+(def not-zero? (complement zero?))
+
+(defn bench-complement [n]
+  (reduce conj [] (filter not-zero? (range (- n) n))))
+
+(println "\ncomplement filter (2000 elements):")
+(time (bench-complement 1000))
+
+;; constantly ベンチマーク
+(defn bench-constantly [n]
+  (doall (map (constantly :value) (range n))))
+
+(println "\nconstantly map (5000 elements):")
+(time (bench-constantly 5000))
+
+;; -----------------------------------------------------------------------------
+;; 15. 追加コレクション操作ベンチマーク
+;; -----------------------------------------------------------------------------
+
+(println "\n--- 15. Additional Collection Operations ---")
+
+;; distinct ベンチマーク
+(def duplicated-vec (reduce conj [] (interleave (range 500) (range 500))))
+
+(println "distinct (1000 elements with duplicates):")
+(time (distinct duplicated-vec))
+
+;; flatten ベンチマーク
+(def nested-vec (reduce conj [] (map (fn [x] [x [x x]]) (range 200))))
+
+(println "\nflatten (nested 200 elements):")
+(time (flatten nested-vec))
+
+;; partition ベンチマーク
+(def partition-vec (reduce conj [] (range 1000)))
+
+(println "\npartition 3 (1000 elements):")
+(time (partition 3 partition-vec))
+
+;; partition-by ベンチマーク
+(println "\npartition-by even? (1000 elements):")
+(time (partition-by even? partition-vec))
+
+;; interleave ベンチマーク
+(def interleave-a (reduce conj [] (range 500)))
+(def interleave-b (reduce conj [] (range 500 1000)))
+
+(println "\ninterleave (500 + 500 elements):")
+(time (interleave interleave-a interleave-b))
+
+;; dedupe ベンチマーク
+(println "\ndedupe (1000 elements with consecutive dupes):")
+(time (dedupe duplicated-vec))
+
+;; subset? / superset? ベンチマーク
+(println "\nsubset? (500 vs 1000):")
+(time (set/subset? (set (reduce conj [] (range 500))) set-a))
+
+(println "\nsuperset? (1000 vs 500):")
+(time (set/superset? set-a (set (reduce conj [] (range 500)))))
+
+;; select-keys ベンチマーク
+(def big-map (reduce (fn [m i] (assoc m (keyword (str "k" i)) i)) {} (range 100)))
+
+(println "\nselect-keys (10 from 100):")
+(time (select-keys big-map [:k1 :k5 :k10 :k20 :k30 :k40 :k50 :k60 :k70 :k80]))
+
+;; merge-with ベンチマーク
+(defn make-small-map [i]
+  {(keyword (str "k" (mod i 10))) i})
+
+(def merge-maps (reduce conj [] (map make-small-map (range 100))))
+
+(println "\nmerge-with + (100 maps):")
+(time (apply merge-with + merge-maps))
+
+;; 文字列述語ベンチマーク
+(println "\n--- String Predicates ---")
+
+(defn bench-starts-with [n]
+  (loop [i 0 count 0]
+    (if (< i n)
+      (recur (inc i) (if (string/starts-with? "hello world" "hello") (inc count) count))
+      count)))
+
+(println "starts-with? (5000 times):")
+(time (bench-starts-with 5000))
+
+(defn bench-includes [n]
+  (loop [i 0 count 0]
+    (if (< i n)
+      (recur (inc i) (if (string/includes? "hello world hello" "world") (inc count) count))
+      count)))
+
+(println "\nincludes? (5000 times):")
+(time (bench-includes 5000))
+
+(defn bench-index-of [n]
+  (loop [i 0 sum 0]
+    (if (< i n)
+      (recur (inc i) (+ sum (string/index-of "hello world hello world" "world")))
+      sum)))
+
+(println "\nindex-of (5000 times):")
+(time (bench-index-of 5000))
+
+;; -----------------------------------------------------------------------------
+;; Regular Expression Benchmarks
+;; -----------------------------------------------------------------------------
+
+(println "\n--- Regular Expression Operations ---")
+
+;; re-find benchmark
+(def re-test-string "User: john@example.com, Age: 25, Score: 100")
+
+(defn bench-re-find [n]
+  (loop [i 0 count 0]
+    (if (< i n)
+      (recur (inc i) (if (re-find #"\d+" re-test-string) (inc count) count))
+      count)))
+
+(println "re-find (5000 times):")
+(time (bench-re-find 5000))
+
+;; re-seq benchmark
+(defn bench-re-seq [n]
+  (loop [i 0 total 0]
+    (if (< i n)
+      (recur (inc i) (+ total (count (re-seq #"\d+" re-test-string))))
+      total)))
+
+(println "\nre-seq (2000 times):")
+(time (bench-re-seq 2000))
+
+;; re-matches benchmark
+(def email-pattern #"[\w.+-]+@[\w.-]+\.\w+")
+
+(defn bench-re-matches [n]
+  (loop [i 0 count 0]
+    (if (< i n)
+      (recur (inc i) (if (re-matches email-pattern "test@example.com") (inc count) count))
+      count)))
+
+(println "\nre-matches (5000 times):")
+(time (bench-re-matches 5000))
+
+;; re-pattern benchmark (dynamic pattern creation)
+(defn bench-re-pattern [n]
+  (loop [i 0 count 0]
+    (if (< i n)
+      (let [p (re-pattern "\\d+")]
+        (recur (inc i) (if (re-find p "abc123") (inc count) count)))
+      count)))
+
+(println "\nre-pattern + re-find (1000 times):")
+(time (bench-re-pattern 1000))
+
+;; Complex pattern benchmark
+(def log-line "[2024-01-15 10:30:45] INFO - User logged in from 192.168.1.100")
+(def log-pattern #"\[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})\] (\w+) - (.+)")
+
+(defn bench-complex-pattern [n]
+  (loop [i 0 cnt 0]
+    (if (< i n)
+      (let [m (re-find log-pattern log-line)]
+        (recur (inc i) (if m (+ cnt (count m)) cnt)))
+      cnt)))
+
+(println "\nComplex pattern with groups (2000 times):")
+(time (bench-complex-pattern 2000))
+
+(println "\n=== Benchmark Complete ===")

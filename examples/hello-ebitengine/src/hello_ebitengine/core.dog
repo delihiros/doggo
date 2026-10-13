@@ -1,0 +1,20 @@
+(ns hello_ebitengine.core
+  (:require [doggo.cli :as cli]
+    [hello_ebitengine.layout :as layout]))
+
+(import "github.com/hajimehoshi/ebiten/v2")
+
+(def game
+  (reify v2/Game
+    {:update (fn [] nil)
+      :draw (fn [_screen] nil)
+      :layout layout/layout}))
+
+(def main
+  (fn [& _args]
+    (v2/SetWindowSize 640 480)
+    (v2/SetWindowTitle "Doggo Ebitengine")
+    (v2/RunGame game)))
+
+(when (cli/entrypoint?)
+  (cli/main main))

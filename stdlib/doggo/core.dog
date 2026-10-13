@@ -1,0 +1,649 @@
+; =====================
+; Doggo Core Library
+; =====================
+(ns doggo.core)
+
+; =====================
+; Runtime State
+; =====================
+; Symbol tracking the current namespace
+; Automatically updated by compiler when ns/in-ns is executed
+; Auto-defined during bootstrap, reassigned here
+(def *ns* 'doggo.core)
+
+; =====================
+; Utility Functions
+; =====================
+; inc, dec are implemented as builtins (optimized)
+; nil?, pos?, empty?, zero?, neg? are implemented as builtins
+; even?, odd? are implemented as builtins (optimized)
+; identity is implemented as builtin
+
+; Higher-order function utilities
+; apply, comp, partial, juxt are implemented as builtins
+
+; vary-meta - Transform metadata with a function
+; (vary-meta obj f & args) => (with-meta obj (apply f (meta obj) args))
+; Clojure compatible: used for manipulating metadata in macros/code generation
+(def vary-meta
+  (fn [obj f & args]
+    (with-meta obj (apply f (meta obj) args))))
+
+; =====================
+; Collection Operations
+; =====================
+; take, drop, reverse, concat are implemented as builtins (with transducer support)
+
+; -concat-all - Internal helper for quasiquote/unquote-splicing
+(def ^:private -concat-all
+  (fn [colls]
+    (let [vec-result (reduce (fn [acc coll]
+            (reduce (fn [a x] (conj a x)) acc coll))
+          []
+          colls)]
+      (reduce (fn [acc x] (cons x acc)) (list) (reverse vec-result)))))
+
+; -concat-all-vec - Internal helper for quasiquote/unquote-splicing in vectors
+(def ^:private -concat-all-vec
+  (fn [colls]
+    (reduce (fn [acc coll]
+        (reduce (fn [a x] (conj a x)) acc coll))
+      []
+      colls)))
+
+; empty?, some, every? are implemented as builtins
+; range is implemented as builtin (returns RangeLazySeq)
+
+; =====================
+; Macro Definitions
+; =====================
+
+; defn - Function definition (supports single and multiple arities)
+(defmacro defn [name & fdecl]
+  (if (vector? (first fdecl))
+    (let [params (first fdecl)
+        body (rest fdecl)]
+      `(def ~name (fn ~params ~@body)))
+    `(def ~name (fn ~@fdecl))))
+
+; Conditional macros
+(defmacro when [cond & body]
+  `(if ~cond (do ~@body) nil))
+
+(defmacro when-not [cond & body]
+  `(if ~cond nil (do ~@body)))
+
+(defmacro unless [cond & body]
+  `(when-not ~cond ~@body))
+
+(defmacro comment [body]
+  nil)
+
+; if-let / when-let - Conditional with binding and test combined
+(defmacro if-let [bindings then else]
+  (let [form (first bindings)
+      test (first (rest bindings))]
+    `(let [temp# ~test]
+      (if temp#
+        (let [~form temp#]
+          ~then)
+        ~else))))
+
+(defmacro when-let [bindings & body]
+  (let [form (first bindings)
+      test (first (rest bindings))]
+    `(let [temp# ~test]
+      (if temp#
+        (let [~form temp#]
+          ~@body)
+        nil))))
+
+; if-some / when-some - Like if-let/when-let but uses some? instead of truthiness
+; This means false is a valid value (only nil triggers else branch)
+(defmacro if-some [bindings then else]
+  (let [form (first bindings)
+      test (first (rest bindings))]
+    `(let [temp# ~test]
+      (if (some? temp#)
+        (let [~form temp#]
+          ~then)
+        ~else))))
+
+(defmacro when-some [bindings & body]
+  (let [form (first bindings)
+      test (first (rest bindings))]
+    `(let [temp# ~test]
+      (if (some? temp#)
+        (let [~form temp#]
+          ~@body)
+        nil))))
+
+; when-first - Execute body when collection has a first element
+(defmacro when-first [bindings & body]
+  (let [form (first bindings)
+      coll (first (rest bindings))]
+    `(when-let [s# (seq ~coll)]
+      (let [~form (first s#)]
+        ~@body))))
+
+; time - Measure execution time
+(defmacro time [expr]
+  `(let [start# (nano-time)
+      ret# ~expr]
+    (println (str "Elapsed time: " (/ (- (nano-time) start#) 1000000.0) " msecs"))
+    ret#))
+
+; cond - Multiple condition branching
+(defmacro cond [& clauses]
+  (if (empty? clauses)
+    nil
+    (if (= (count clauses) 1)
+      (first clauses)
+      (let [condition (first clauses)
+          result (first (rest clauses))
+          remaining (rest (rest clauses))]
+        (if (= condition :else)
+          result
+          `(if ~condition ~result (cond ~@remaining)))))))
+
+; Threading macros
+; -> : Insert value as second argument in each form
+(defmacro -> [x & forms]
+  (if (empty? forms)
+    x
+    (let [form (first forms)
+        remaining (rest forms)]
+      (if (list? form)
+        `(-> (~(first form) ~x ~@(rest form)) ~@remaining)
+        `(-> (~form ~x) ~@remaining)))))
+
+; ->> : Insert value as last argument in each form
+(defmacro ->> [x & forms]
+  (if (empty? forms)
+    x
+    (let [form (first forms)
+        remaining (rest forms)]
+      (if (list? form)
+        `(->> (~(first form) ~@(rest form) ~x) ~@remaining)
+        `(->> (~form ~x) ~@remaining)))))
+
+; as-> : Thread with explicit binding name for flexible placement
+(defmacro as-> [expr name & forms]
+  (if (empty? forms)
+    expr
+    `(let [~name ~expr]
+      (as-> ~(first forms) ~name ~@(rest forms)))))
+
+; some-> : Thread-first, stops and returns nil if any form returns nil
+(defmacro some-> [expr & forms]
+  (if (empty? forms)
+    expr
+    (let [form (first forms)
+        remaining (rest forms)
+        threaded (if (list? form)
+          `(~(first form) some-temp# ~@(rest form))
+          `(~form some-temp#))]
+      `(let [some-temp# ~expr]
+        (if (nil? some-temp#)
+          nil
+          (some-> ~threaded ~@remaining))))))
+
+; some->> : Thread-last, stops and returns nil if any form returns nil
+(defmacro some->> [expr & forms]
+  (if (empty? forms)
+    expr
+    (let [form (first forms)
+        remaining (rest forms)
+        threaded (if (list? form)
+          `(~(first form) ~@(rest form) some-temp#)
+          `(~form some-temp#))]
+      `(let [some-temp# ~expr]
+        (if (nil? some-temp#)
+          nil
+          (some->> ~threaded ~@remaining))))))
+
+; case - Conditional branching by value
+(defmacro case [expr & clauses]
+  (if (empty? clauses)
+    nil
+    (if (= (count clauses) 1)
+      (first clauses)
+      (let [val (first clauses)
+          result (first (rest clauses))
+          remaining (rest (rest clauses))]
+        `(let [case-val# ~expr]
+          (if (= case-val# ~val)
+            ~result
+            (case case-val# ~@remaining)))))))
+
+; condp - Conditional with shared predicate
+; (condp pred expr test1 result1 test2 result2 default)
+; Evaluates (pred testN expr) and returns resultN if truthy
+(defmacro condp [pred expr t1 r1 t2 r2 default]
+  `(if (~pred ~t1 ~expr)
+    ~r1
+    (if (~pred ~t2 ~expr)
+      ~r2
+      ~default)))
+
+; doto - Sequential operations on an object
+(defmacro doto [x & forms]
+  (let [target (gensym "doto-val__")
+      insert-first (fn [form val]
+        (if (list? form)
+          (cons (first form) (cons val (rest form)))
+          (list form val)))]
+    `(let [~target ~x]
+      ~@(map (fn [form] (insert-first form target)) forms)
+      ~target)))
+
+; cond-> - Conditional thread-first
+; Threads expr through forms where test is truthy
+(defmacro cond-> [expr & clauses]
+  (if (empty? clauses)
+    expr
+    (let [test (first clauses)
+        form (first (rest clauses))
+        remaining (rest (rest clauses))
+        threaded (if (list? form)
+          `(~(first form) cond-temp# ~@(rest form))
+          `(~form cond-temp#))]
+      `(let [cond-temp# ~expr]
+        (cond-> (if ~test ~threaded cond-temp#) ~@remaining)))))
+
+; cond->> - Conditional thread-last
+; Threads expr through forms where test is truthy
+(defmacro cond->> [expr & clauses]
+  (if (empty? clauses)
+    expr
+    (let [test (first clauses)
+        form (first (rest clauses))
+        remaining (rest (rest clauses))
+        threaded (if (list? form)
+          `(~(first form) ~@(rest form) cond-temp#)
+          `(~form cond-temp#))]
+      `(let [cond-temp# ~expr]
+        (cond->> (if ~test ~threaded cond-temp#) ~@remaining)))))
+
+; =====================
+; Iteration Macros
+; =====================
+
+; for - List comprehension (Clojure compatible)
+; (for [x coll] body) => Lazy sequence with body applied to each element
+; (for [x coll :when pred] body) => Process only elements satisfying pred
+; (for [x coll :let [y expr]] body) => Bind intermediate variables
+; (for [x xs y ys] body) => Cartesian product (nested loop)
+; (for [x coll :while pred] body) => Stop when pred becomes false
+
+; -for-parse-bindings: Internal - Parse binding vector into element list
+; Each element is [:binding var coll], [:when pred], [:let bindings], or [:while pred]
+(def ^:private -for-parse-bindings
+  (fn [bindings]
+    (loop [remaining bindings
+        result []]
+      (if (empty? remaining)
+        result
+        (let [item (first remaining)]
+          (cond
+            ; :when modifier
+            (= item :when)
+            (recur (rest (rest remaining))
+              (conj result [:when (first (rest remaining))]))
+            ; :let modifier
+            (= item :let)
+            (recur (rest (rest remaining))
+              (conj result [:let (first (rest remaining))]))
+            ; :while modifier
+            (= item :while)
+            (recur (rest (rest remaining))
+              (conj result [:while (first (rest remaining))]))
+            ; variable binding
+            :else
+            (recur (rest (rest remaining))
+              (conj result [:binding item (first (rest remaining))]))))))))
+
+; -for-collect-whiles: Internal - Collect consecutive :while modifiers after binding
+; Returns: [list of while predicates, remaining items]
+(def ^:private -for-collect-whiles
+  (fn [items]
+    (loop [remaining items
+        preds []]
+      (if (empty? remaining)
+        [preds remaining]
+        (let [item (first remaining)
+            tag (first item)]
+          (if (= tag :while)
+            (recur (rest remaining) (conj preds (nth item 1)))
+            [preds remaining]))))))
+
+; -for-expand: Internal - Generate code from parsed bindings
+(def ^:private -for-expand
+  (fn [parsed-bindings body]
+    (if (empty? parsed-bindings)
+      ; Innermost: wrap result in vector
+      `[~body]
+      (let [item (first parsed-bindings)
+          rest-items (rest parsed-bindings)
+          tag (first item)]
+        (cond
+          ; :when modifier
+          (= tag :when)
+          (let [pred (nth item 1)]
+            `(if ~pred
+              ~(-for-expand rest-items body)
+              []))
+          ; :let modifier
+          (= tag :let)
+          (let [bindings (nth item 1)]
+            `(let ~bindings
+              ~(-for-expand rest-items body)))
+          ; :while modifier (orphaned - no preceding binding)
+          ; This case normally doesn't occur, but handle like :when just in case
+          (= tag :while)
+          (let [pred (nth item 1)]
+            `(if ~pred
+              ~(-for-expand rest-items body)
+              []))
+          ; :binding - normal var/coll binding
+          ; If :while follows immediately, wrap collection with take-while
+          :else
+          (let [var (nth item 1)
+              coll (nth item 2)
+              ; Collect consecutive :while modifiers that follow
+              whiles-result (-for-collect-whiles rest-items)
+              while-preds (first whiles-result)
+              remaining (second whiles-result)
+              ; Nest take-while for each :while predicate
+              final-coll (reduce (fn [c pred]
+                  `(take-while (fn [~var] ~pred) ~c))
+                coll
+                while-preds)]
+            `(mapcat (fn [~var]
+                ~(-for-expand remaining body))
+              ~final-coll)))))))
+
+(defmacro for [bindings body]
+  (let [parsed (-for-parse-bindings bindings)]
+    (-for-expand parsed body)))
+
+; doseq - Iteration for side effects
+; (doseq [x coll] body) => Execute body for each element of coll, return nil
+(defmacro doseq [bindings & body]
+  (let [var (first bindings)
+      coll (first (rest bindings))]
+    `(do
+      (reduce (fn [_ ~var] ~@body nil) nil ~coll)
+      nil)))
+
+; dotimes - Repeat specified number of times
+; (dotimes [i n] body) => Execute body with i bound from 0 to n-1, return nil
+(defmacro dotimes [bindings & body]
+  (let [var (first bindings)
+      n (first (rest bindings))]
+    `(do
+      (loop [~var 0]
+        (if (< ~var ~n)
+          (do
+            ~@body
+            (recur (inc ~var)))
+          nil))
+      nil)))
+
+; =====================
+; Lazy Sequences
+; =====================
+
+; lazy-seq - Create a lazily evaluated sequence
+(defmacro lazy-seq [& body]
+  `(new-lazy-seq (fn [] ~@body)))
+
+; -assume-infinite-lazy-seq - Mark a lazy sequence as having no finite end
+(defmacro ^:private -assume-infinite-lazy-seq [& body]
+  `(new-lazy-seq (fn [] ~@body) true))
+
+; -source-tracked-lazy-seq - Track the sources that control lazy traversal
+(defmacro ^:private -source-tracked-lazy-seq [sources & body]
+  `(new-lazy-seq (fn [] ~@body) false false false ~@sources))
+
+; -infinity-preserving-lazy-seq - Preserve infinite length from tracked sources
+(defmacro ^:private -infinity-preserving-lazy-seq [sources & body]
+  `(new-lazy-seq (fn [] ~@body) false true false ~@sources))
+
+; repeat - (take 5 (repeat 1)) -> (1 1 1 1 1)
+(def repeat
+  (fn [x]
+    (-assume-infinite-lazy-seq (cons x (repeat x)))))
+
+; iterate - (take 5 (iterate inc 0)) -> (0 1 2 3 4)
+(def iterate
+  (fn [f x]
+    (-assume-infinite-lazy-seq (cons x (iterate f (f x))))))
+
+; repeatedly - Call f repeatedly to generate lazy sequence
+; (take 3 (repeatedly rand)) -> (0.123 0.456 0.789)
+; (repeatedly 3 rand) -> (0.123 0.456 0.789)
+(def repeatedly
+  (fn
+    ([f] (-assume-infinite-lazy-seq (cons (f) (repeatedly f))))
+    ([n f] (take n (repeatedly f)))))
+
+; cycle - (take 7 (cycle [1 2 3])) -> (1 2 3 1 2 3 1)
+(def ^:private -cycle-helper
+  (fn [items original]
+    (-assume-infinite-lazy-seq
+      (if (empty? items)
+        (if (empty? original)
+          nil
+          (cons (first original) (-cycle-helper (rest original) original)))
+        (cons (first items) (-cycle-helper (rest items) original))))))
+
+(def cycle
+  (fn [coll]
+    (-infinity-preserving-lazy-seq [coll]
+      (if (empty? coll)
+        nil
+        (-cycle-helper coll coll)))))
+
+; take-while - (take-while pos? [3 2 1 0 -1]) -> (3 2 1)
+(def take-while
+  (fn [pred coll]
+    (new-lazy-seq
+      (fn []
+        (if (empty? coll)
+          nil
+          (let [f (first coll)]
+            (if (pred f)
+              (cons f (take-while pred (rest coll)))
+              nil))))
+      false false true coll)))
+
+; drop-while - (drop-while pos? [3 2 1 0 -1]) -> (0 -1)
+(def drop-while
+  (fn [pred coll]
+    (loop [items coll]
+      (if (empty? items)
+        (list)
+        (if (pred (first items))
+          (recur (rest items))
+          items)))))
+
+; mapcat - Apply function to each element and concatenate results
+; (mapcat reverse [[3 2 1 0] [6 5 4] [9 8 7]]) -> (0 1 2 3 4 5 6 7 8 9)
+(def ^:private -mapcat-helper
+  (fn [f coll current]
+    (-source-tracked-lazy-seq [coll current]
+      (if (seq current)
+        (cons (first current) (-mapcat-helper f coll (rest current)))
+        (if (seq coll)
+          (-mapcat-helper f (rest coll) (f (first coll)))
+          nil)))))
+
+(defn mapcat [f coll]
+  (-mapcat-helper f coll nil))
+
+; dorun/doall are implemented as builtins
+
+; =====================
+; Concurrency
+; =====================
+; Channel operations: use chan, >!, <!, close! directly
+
+; future - Evaluate expression concurrently in a goroutine
+; Result is retrieved with @future or (deref future)
+(defmacro future [& body]
+  `(future-call (fn [] ~@body)))
+
+; pcalls - Execute multiple functions in parallel
+(defn pcalls [& fns]
+  (let [futures (doall (map (fn [f] (future (f))) fns))]
+    (map deref futures)))
+
+; pmap - Parallel map
+(defn pmap [f coll]
+  ; ponytail: fixed two-item batches cap parallelism; add a CPU-count builtin if throughput matters.
+  (-infinity-preserving-lazy-seq [coll]
+    (if (seq coll)
+      (let [batch (take 2 coll)
+          futures (doall (map (fn [x] (future (f x))) batch))]
+        (concat (map deref futures) (pmap f (drop 2 coll))))
+      nil)))
+
+; =====================
+; Go Interop
+; =====================
+
+; .. - Method chaining macro
+; (.. x (MethodA) (MethodB args)) => (. (. x MethodA) MethodB args)
+(defmacro .. [x & forms]
+  (if (empty? forms)
+    x
+    (let [form (first forms)
+        remaining (rest forms)]
+      (if (list? form)
+        `(.. (. ~x ~(first form) ~@(rest form)) ~@remaining)
+        `(.. (. ~x ~form) ~@remaining)))))
+
+; =====================
+; Protocols
+; =====================
+
+; defprotocol - Define a protocol and generate dispatch functions for each method
+; Usage:
+;   (defprotocol IStringable
+;     (to-string [this]))
+;
+;   (extend-type string IStringable
+;     (to-string [this] this))
+;
+;   (extend-type number IStringable
+;     (to-string [this] (str this)))
+;
+;   (to-string 42) => "42"
+
+(defmacro defprotocol [name & method-specs]
+  (let [; Convert method names to keywords (avoid macro expansion issues)
+      method-names (vec (map (fn [spec] (keyword (str (first spec)))) method-specs))
+      protocol-sym name]
+    `(do
+      ; Create protocol object
+      (def ~protocol-sym (defprotocol* '~name ~method-names))
+      ; Define dispatch function for each method
+      ~@(map (fn [spec]
+          (let [method-name (first spec)
+              params (first (rest spec))
+              ; First param is this
+              this-param (first params)
+              rest-params (rest params)]
+            `(defn ~method-name ~params
+              (invoke-protocol-method ~protocol-sym '~method-name ~this-param ~@rest-params))))
+        method-specs)
+      ~protocol-sym)))
+
+; extend-type - Add protocol implementation to a type
+; Usage:
+;   (extend-type string IStringable
+;     (to-string [this] this))
+(defmacro extend-type [type-name protocol & impls]
+  (let [impl-pairs (loop [remaining impls
+          result {}]
+        (if (empty? remaining)
+          result
+          (let [method-spec (first remaining)
+              ; Convert method name to keyword
+              method-name (keyword (str (first method-spec)))
+              params (first (rest method-spec))
+              body (rest (rest method-spec))]
+            (recur (rest remaining)
+              (assoc result method-name `(fn ~params ~@body))))))]
+    `(extend-type* ~protocol '~type-name ~impl-pairs (fn [] nil))))
+
+; extend-protocol - Add protocol implementation to multiple types
+; (extend-protocol Protocol
+;   Type1 (method1 [args] body1) (method2 [args] body2)
+;   Type2 (method1 [args] body3))
+; Equivalent to:
+;   (extend-type Type1 Protocol (method1 [args] body1) (method2 [args] body2))
+;   (extend-type Type2 Protocol (method1 [args] body3))
+(defmacro extend-protocol [protocol & specs]
+  ; Traverse specs to generate list of extend-type calls
+  ; Symbol = start of new type, list = method definition
+  (let [extend-type-calls
+      (loop [remaining specs
+          current-type nil
+          current-methods []
+          result []]
+        (if (empty? remaining)
+          ; Add methods for last type and finish
+          (if current-type
+            (conj result `(extend-type ~current-type ~protocol ~@current-methods))
+            result)
+          (let [item (first remaining)]
+            (if (list? item)
+              ; List -> method definition, add to current type
+              (recur (rest remaining) current-type (conj current-methods item) result)
+              ; Symbol -> start of new type
+              (let [new-result (if current-type
+                    (conj result `(extend-type ~current-type ~protocol ~@current-methods))
+                    result)]
+                (recur (rest remaining) item [] new-result))))))]
+    `(do ~@extend-type-calls)))
+
+; memoize, complement, constantly are implemented as builtins
+
+; =====================
+; Dynamic Binding
+; =====================
+
+; binding - Create temporary execution-scoped bindings for ^:dynamic Vars
+; Usage:
+;   (def ^:dynamic *x* 1)
+;   (binding [*x* 2] *x*)  ; => 2
+;   *x*                    ; => 1 (original value outside)
+;
+; binding uses try/finally to ensure dynamic bindings are released,
+; making it safe even when exceptions occur.
+(defmacro binding [bindings & body]
+  (let [; Convert bindings from [var val var val ...] to list for map construction
+      ; Generate format: (hash-map (var *x*) val1 (var *y*) val2 ...)
+      binding-pairs (loop [remaining bindings
+          result []]
+        (if (empty? remaining)
+          result
+          (let [sym (first remaining)
+              val (first (rest remaining))]
+            (recur (rest (rest remaining))
+              (conj (conj result `(var ~sym)) val)))))]
+    ; Use try/finally to ensure pop
+    `(do
+      (push-dynamic-bindings (hash-map ~@binding-pairs))
+      (try
+        (do ~@body)
+        (finally
+          (pop-dynamic-bindings))))))
+
+; =====================
+; Initialization Complete
+; =====================
+; Return to user namespace after core is loaded
+(in-ns 'user)

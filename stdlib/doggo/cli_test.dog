@@ -1,0 +1,146 @@
+; =====================
+; doggo.cli tests
+; =====================
+(ns doggo.cli-test
+  (:require [doggo.cli :as cli]
+    [doggo.test :as t]))
+
+(t/deftest command-line-args-default-to-nil
+  (t/is (= nil cli/*command-line-args*))
+  (t/is (= nil (cli/command-line-args))))
+
+(t/deftest main-applies-explicit-args-and-rebinds-dynamic-var
+  (t/is (= ["a" "b"]
+      (cli/main (fn [a b] [a b]) ["a" "b"])))
+  (t/is (= [["a" "b"] ["a" "b"]]
+      (cli/main (fn [a b]
+          [cli/*command-line-args*
+            (cli/command-line-args)])
+        ["a" "b"]))))
+
+(t/deftest main-reuses-current-command-line-args
+  (t/is (= [["x"] ["x"]]
+      (binding [cli/*command-line-args* ["x"]]
+        (cli/main (fn [x]
+            [cli/*command-line-args*
+              (cli/command-line-args)]))))))
+
+(t/deftest command-line-args-follows-dynamic-binding
+  (t/is (= [["bound"] ["bound"]]
+      (binding [cli/*command-line-args* ["bound"]]
+        [cli/*command-line-args* (cli/command-line-args)]))))
+
+(t/deftest parse-args-handles-options-and-positionals
+  (let [spec {:verbose {:type :boolean}
+        :output {:short :o}
+        :count {}
+        :cache {:type :boolean}
+        :a {:type :boolean}
+        :b {:type :boolean}
+        :c {:type :boolean}
+        :threshold {}}]
+    (t/is (= {:options {:verbose true
+            :output "-x"
+            :count "2"
+            :cache false
+            :a true
+            :b true
+            :c true
+            :threshold "-1"}
+          :arguments ["input.txt" "tail" "-z" "-"]}
+        (cli/parse-args spec
+          ["--verbose"
+            "-o=-x"
+            "--count=2"
+            "--no-cache"
+            "-abc"
+            "--threshold=-1"
+            "input.txt"
+            "--"
+            "tail"
+            "-z"
+            "-"])))))
+
+(t/deftest parse-args-uses-current-command-line-args-by-default
+  (let [spec {:name {}
+        :debug {:type :boolean}}]
+    (t/is (= {:options {:name "doggo"
+            :debug true}
+          :arguments ["serve"]}
+        (binding [cli/*command-line-args* ["serve" "--name" "doggo" "--debug"]]
+          (cli/parse-args spec))))))
+
+(t/deftest parse-args-prefers-exact-no-prefix-options
+  (let [spec {:no-color {:type :boolean}}]
+    (t/is (= {:options {:no-color true}
+          :arguments []}
+        (cli/parse-args spec ["--no-color"])))
+    (t/is (= {:options {:no-color false}
+          :arguments []}
+        (cli/parse-args spec ["--no-no-color"]))))
+  (t/is (= {:options {:color false}
+        :arguments []}
+      (cli/parse-args {:color {:type :boolean}} ["--no-color"]))))
+
+(t/deftest parse-args-rejects-invalid-option-configurations
+  (t/is (t/thrown-with-msg?
+      #"doggo\.cli/parse-args: expected option spec map"
+      (cli/parse-args [] ["--debug"])))
+  (t/is (t/thrown?
+      (cli/parse-args {:debug true} ["--debug"])))
+  (t/is (t/thrown-with-msg?
+      #"doggo\.cli/parse-args: option name must not be empty"
+      (cli/parse-args {:debug {:type :boolean}} ["--=bad"])))
+  (t/is (t/thrown-with-msg?
+      #"doggo\.cli/parse-args: short option for :debug must be a single character"
+      (cli/parse-args {:debug {:short "dd"}} ["--debug"])))
+  (t/is (t/thrown-with-msg?
+      #"doggo\.cli/parse-args: short option for :stdin must not be -"
+      (cli/parse-args {:stdin {:short "-" :type :boolean}} ["-"])))
+  (t/is (t/thrown-with-msg?
+      #"doggo\.cli/parse-args: duplicate long option --foo"
+      (cli/parse-args {"foo" {:type :boolean}
+          :foo {}}
+        ["--foo" "bar"])))
+  (t/is (t/thrown-with-msg?
+      #"doggo\.cli/parse-args: option name a=b must not contain ="
+      (cli/parse-args {"a=b" {:type :boolean}} ["--a=b"])))
+  (t/is (t/thrown-with-msg?
+      #"doggo\.cli/parse-args: option name -foo must not start with -"
+      (cli/parse-args {"-foo" {:type :boolean}} ["---foo"])))
+  (t/is (t/thrown-with-msg?
+      #"doggo\.cli/parse-args: option --no-color conflicts with boolean negation of --color"
+      (cli/parse-args {:color {:type :boolean}
+          :no-color {:type :boolean}}
+        ["--color"]))))
+
+(t/deftest parse-args-rejects-unknown-options-and-missing-values
+  (let [spec {:debug {:type :boolean}
+        :output {:short :o}
+        :a {:type :boolean}
+        :b {:type :boolean}
+        :c {:type :boolean}}]
+    (t/is (t/thrown-with-msg?
+        #"doggo\.cli/parse-args: unknown option --verbose"
+        (cli/parse-args spec ["--verbose"])))
+    (t/is (t/thrown-with-msg?
+        #"doggo\.cli/parse-args: missing value for --output"
+        (cli/parse-args spec ["--output"])))
+    (t/is (t/thrown-with-msg?
+        #"doggo\.cli/parse-args: unknown option -z"
+        (cli/parse-args spec ["-z"])))
+    (t/is (t/thrown-with-msg?
+        #"doggo\.cli/parse-args: value for --output must use --output=<value> when it starts with -"
+        (cli/parse-args spec ["--output" "--debug"])))
+    (t/is (t/thrown-with-msg?
+        #"doggo\.cli/parse-args: value for -o must use -o=<value> when it starts with -"
+        (cli/parse-args (assoc spec :debug {:type :boolean :short :d}) ["-o" "-d"])))
+    (t/is (= {:options {:output "out.txt"}
+          :arguments []}
+        (cli/parse-args spec ["-oout.txt"])))
+    (t/is (= {:options {:output "-x"}
+          :arguments []}
+        (cli/parse-args spec ["-o=-x"])))
+    (t/is (t/thrown-with-msg?
+        #"doggo\.cli/parse-args: missing value for -c"
+        (cli/parse-args (assoc spec :c {}) ["-abc"])))))

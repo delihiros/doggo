@@ -1,0 +1,44 @@
+; =====================
+; Doggo OS Library
+; =====================
+(ns doggo.os)
+
+(def getenv
+  (fn [key]
+    (os-getenv* key)))
+
+(def env
+  (fn []
+    (os-env*)))
+
+(def setenv
+  (fn [key value]
+    (os-setenv* key value)))
+
+(def unsetenv
+  (fn [key]
+    (os-unsetenv* key)))
+
+(def cwd
+  (fn []
+    (os-cwd*)))
+
+(def user-home
+  (fn []
+    (os-user-home*)))
+
+(def system-temp-dir
+  (fn []
+    (os-system-temp-dir*)))
+
+(def hostname
+  (fn []
+    (os-hostname*)))
+
+(def os-name
+  (fn []
+    (os-name*)))
+
+(def which
+  (fn [name]
+    (os-which* name)))

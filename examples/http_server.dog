@@ -1,0 +1,38 @@
+;; Doggo HTTP Server Example
+;; シンプルなHTTPサーバーの実装例
+;;
+;; このサンプルでは reify を使用して Go の http.Handler インターフェースを
+;; Doggo で実装し、HTTPサーバーを起動します。
+;;
+;; 実行方法:
+;;   doggo mod sync
+;;   doggo build
+;;   doggo exec -- examples/http_server.dog
+;;
+;; テスト方法:
+;;   curl http://localhost:8080/
+;;   curl http://localhost:8080/hello
+
+(import "net/http")
+(import "io")
+
+;; http.Handler インターフェースの実装
+;; reify は Doggo マップから Go インターフェースの実装を作成
+;; キー :ServeHTTP（または :servehttp）で ServeHTTP メソッドの実装を指定
+(def handler
+  (reify http/Handler
+    {:ServeHTTP (fn [w r]
+        ;; リクエストのURLパスをログ出力
+        (println "Received request:" (. (. r URL) Path))
+        ;; レスポンスボディを書き込み
+        (io/WriteString w "Hello from Doggo!"))}))
+
+;; サーバー起動
+(println "Starting server on http://localhost:8080")
+(println "Press Ctrl+C to stop")
+
+;; ListenAndServe はブロッキング呼び出し
+;; エラーが発生した場合のみ戻り値がある
+(def err (http/ListenAndServe ":8080" handler))
+(if err
+  (println "Server exited with error:" err))

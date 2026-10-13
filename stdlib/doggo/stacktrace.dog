@@ -1,0 +1,198 @@
+; =====================
+; Doggo Stacktrace Library
+; =====================
+(ns doggo.stacktrace
+  (:require [doggo.string :as str]))
+
+(def ^:private -illegal-argument
+  (fn
+    ([fn-name message]
+      (-illegal-argument fn-name message {}))
+    ([fn-name message details]
+      (throw (ex-info message
+          (merge {:kind :invalid-argument
+              :function fn-name}
+            details))))))
+
+(def ^:private -type-name
+  (fn [value]
+    (if (nil? value) "nil" (type-name value))))
+
+(def ^:private -ensure-exception
+  (fn [fn-name value]
+    (if (some? (ex->map value))
+      value
+      (throw (ex-info
+          (str fn-name " expects error, got "
+            (if (nil? value) "nil" (type-name value)))
+          {:kind :invalid-argument
+            :function fn-name
+            :argument :value
+            :expected "error"
+            :actual (-type-name value)})))))
+
+(def ^:private -render-option-keys
+  {:depth true
+    :filter true})
+
+(def ^:private -first-unsupported-option
+  (fn [opts allowed]
+    (loop [remaining (keys opts)]
+      (if (empty? remaining)
+        nil
+        (let [option (first remaining)]
+          (if (contains? allowed option)
+            (recur (rest remaining))
+            option))))))
+
+(def ^:private -require-depth-option
+  (fn [fn-name depth]
+    (if (or (nil? depth) (number? depth))
+      depth
+      (-illegal-argument fn-name
+        (str fn-name ": option :depth must be number, got "
+          (-type-name depth))
+        {:argument :depth
+          :expected "number"
+          :actual depth}))))
+
+(def ^:private -require-predicate
+  (fn [fn-name label predicate]
+    (if (ifn? predicate)
+      predicate
+      (-illegal-argument fn-name
+        (str fn-name ": " label " must be a callable predicate, got "
+          (-type-name predicate))
+        {:argument :filter
+          :expected "callable predicate"
+          :actual predicate}))))
+
+(def ^:private -require-filter-option
+  (fn [fn-name filter-fn]
+    (if (nil? filter-fn)
+      nil
+      (-require-predicate fn-name "option :filter" filter-fn))))
+
+(def ^:private -render-options
+  (fn [fn-name depth-or-options]
+    (if (nil? depth-or-options)
+      {:depth nil :filter nil}
+      (if (map? depth-or-options)
+        (let [unsupported (-first-unsupported-option depth-or-options
+              -render-option-keys)]
+          (if unsupported
+            (-illegal-argument fn-name
+              (str fn-name ": unsupported option " unsupported)
+              {:argument :options
+                :expected "map with :depth and/or :filter"
+                :actual unsupported})
+            {:depth (-require-depth-option fn-name (:depth depth-or-options))
+              :filter (-require-filter-option fn-name (:filter depth-or-options))}))
+        (-illegal-argument fn-name
+          (str fn-name ": expected option map, got "
+            (-type-name depth-or-options))
+          {:argument :options
+            :expected "map"
+            :actual depth-or-options})))))
+
+(def cause-chain
+  (fn [value]
+    (loop [current (-ensure-exception 'doggo.stacktrace/cause-chain value) acc []]
+      (let [cause (ex-cause current)
+          next-acc (conj acc current)]
+        (if (and (some? cause)
+            (some? (ex->map cause)))
+          (recur cause next-acc)
+          next-acc)))))
+
+(def root-cause
+  (fn [value]
+    (loop [current (-ensure-exception 'doggo.stacktrace/root-cause value)]
+      (if (some? (ex->map current))
+        (let [cause (ex-cause current)]
+          (if (and (some? cause)
+              (some? (ex->map cause)))
+            (recur cause)
+            current))
+        current))))
+
+(def format-exception
+  (fn [value]
+    (let [error (-ensure-exception 'doggo.stacktrace/format-exception value)]
+      (str (get (ex-data error) :kind :error) ": " (ex-message error)))))
+
+(def format-cause-trace
+  (fn [value]
+    (let [chain (cause-chain value)]
+      (loop [remaining chain idx 0 lines []]
+        (if (empty? remaining)
+          (str/join "\n" lines)
+          (recur (rest remaining)
+            (inc idx)
+            (conj lines
+              (str "[" idx "] "
+                (format-exception (first remaining))))))))))
+
+(def stack-frames
+  (fn [value]
+    (:trace (ex->map (-ensure-exception 'doggo.stacktrace/stack-frames value)))))
+
+(def filter-stack-frames
+  (fn [value predicate]
+    (let [pred (-require-predicate 'doggo.stacktrace/filter-stack-frames
+          "predicate"
+          predicate)]
+      (vec (filter pred
+          (stack-frames value))))))
+
+(def ^:private -limit-frames
+  (fn [frames depth]
+    (if (nil? depth)
+      frames
+      (loop [remaining-depth depth
+          remaining-frames frames
+          acc []]
+        (if (or (empty? remaining-frames)
+            (not (pos? remaining-depth)))
+          acc
+          (recur (- remaining-depth 1)
+            (rest remaining-frames)
+            (conj acc (first remaining-frames))))))))
+
+(def format-stack-trace
+  (fn
+    ([value]
+      (format-stack-trace value nil))
+    ([value depth-or-options]
+      (let [chain (cause-chain value)
+          options (-render-options 'doggo.stacktrace/format-stack-trace
+            depth-or-options)]
+        (loop [remaining chain idx 0 lines []]
+          (if (empty? remaining)
+            (str/join "\n" lines)
+            (let [current (first remaining)
+                header (str "[" idx "] " (format-exception current))
+                frames (stack-frames current)
+                filtered-frames (if (some? (:filter options))
+                  (filter (:filter options) frames)
+                  frames)
+                limited-frames (-limit-frames filtered-frames (:depth options))
+                frame-lines (map (fn [frame] (str "  at " frame))
+                  limited-frames)]
+              (recur (rest remaining)
+                (inc idx)
+                (concat lines (cons header frame-lines))))))))))
+
+(def print-cause-trace
+  (fn [value]
+    (println (format-cause-trace value))
+    nil))
+
+(def print-stack-trace
+  (fn
+    ([value]
+      (println (format-stack-trace value))
+      nil)
+    ([value depth-or-options]
+      (println (format-stack-trace value depth-or-options))
+      nil)))

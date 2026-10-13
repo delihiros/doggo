@@ -1,0 +1,6 @@
+(ns hello_ebitengine.core-test
+  (:require [doggo.test :as t]
+    [hello_ebitengine.layout :as layout]))
+
+(t/deftest layout-test
+  (t/is (= [320 240] (layout/layout 640 480))))

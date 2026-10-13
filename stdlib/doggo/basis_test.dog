@@ -1,0 +1,28 @@
+; =====================
+; doggo.basis tests
+; =====================
+(ns doggo.basis-test
+  (:require [doggo.basis :as basis]
+    [doggo.test :as t]))
+
+(t/deftest basis-current-basis-exposes-runtime-snapshot
+  (let [snapshot (basis/current-basis)
+      targets (basis/generated-targets)
+      build (:build targets)]
+    (t/is (map? snapshot))
+    (t/is (= (basis/project-root) (:project-root snapshot)))
+    (t/is (string? (basis/project-root)))
+    (t/is (< 0 (count (basis/project-root))))
+    (t/is (= nil (basis/module-name)))
+    (t/is (= [] (basis/deps)))
+    (t/is (= [] (basis/lock-deps)))
+    (t/is (vector? (basis/load-paths)))
+    (t/is (< 0 (count (basis/load-paths))))
+    (t/is (map? targets))
+    (t/is (vector? (:go-packages targets)))
+    (t/is (vector? (:reify-targets targets)))
+    (t/is (or (nil? (:binary build)) (string? (:binary build))))
+    (t/is (or (nil? (:sha256 build)) (string? (:sha256 build))))))
+
+(t/deftest basis-initial-basis-matches-current-in-default-project-runner
+  (t/is (= (basis/current-basis) (basis/initial-basis))))

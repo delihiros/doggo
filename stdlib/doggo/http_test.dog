@@ -1,0 +1,9 @@
+(ns doggo.http-test
+  (:require [doggo.http :as http]
+    [doggo.test :as t]))
+
+(t/deftest request-validates-without-network-access
+  (t/is (t/thrown? (http/request)))
+  (t/is (t/thrown? (http/request "https://example.com" {} {})))
+  (t/is (t/thrown-with-msg? #"doggo.http/request" (http/request 42)))
+  (t/is (t/thrown-with-msg? #"unsupported option" (http/request "http://127.0.0.1:0" {:unknown true}))))

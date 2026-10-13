@@ -1,0 +1,8 @@
+; =====================
+; Doggo Instant Library
+; =====================
+(ns doggo.instant)
+
+(def parse-timestamp
+  (fn [s]
+    (parse-timestamp* s)))

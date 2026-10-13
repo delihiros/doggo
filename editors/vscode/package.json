@@ -1,0 +1,160 @@
+{
+  "name": "doggo-vscode",
+  "displayName": "Doggo",
+  "description": "Doggo language support powered by doggo exec",
+  "version": "0.1.0",
+  "publisher": "doggo-lang",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "homepage": "https://github.com/delihiros/doggo",
+  "bugs": {
+    "url": "https://github.com/delihiros/doggo/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/delihiros/doggo.git"
+  },
+  "keywords": [
+    "doggo",
+    "lisp",
+    "clojure",
+    "lsp"
+  ],
+  "engines": {
+    "vscode": "^1.90.0",
+    "node": ">=22.12.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "galleryBanner": {
+    "color": "#1f6fb2",
+    "theme": "dark"
+  },
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onLanguage:doggo",
+    "onCommand:doggo.restartLanguageServer",
+    "onCommand:doggo.showLanguageServerOutput",
+    "onCommand:doggo.runSelectionInRepl",
+    "onCommand:doggo.diagnoseIndentation"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "doggo",
+        "aliases": [
+          "Doggo",
+          "doggo"
+        ],
+        "extensions": [
+          ".dog"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "doggo",
+        "scopeName": "source.doggo",
+        "path": "./syntaxes/doggo.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "doggo.restartLanguageServer",
+        "title": "Doggo: Restart Language Server"
+      },
+      {
+        "command": "doggo.showLanguageServerOutput",
+        "title": "Doggo: Show Language Server Output"
+      },
+      {
+        "command": "doggo.runSelectionInRepl",
+        "title": "Doggo: Run Selection in REPL"
+      },
+      {
+        "command": "doggo.diagnoseIndentation",
+        "title": "Doggo: Diagnose Indentation"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "doggo.runSelectionInRepl",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "editorTextFocus && editorLangId == doggo && editorHasSelection"
+      }
+    ],
+    "configuration": {
+      "title": "Doggo",
+      "properties": {
+        "doggo.lsp.command": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute or PATH command used to launch Doggo LSP directly. Empty uses `doggo exec -- lsp` from PATH."
+        },
+        "doggo.lsp.args": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional arguments appended after the 'lsp' subcommand."
+        },
+        "doggo.lsp.env": {
+          "type": "object",
+          "default": {},
+          "description": "Extra environment variables passed to the Doggo language server process."
+        },
+        "doggo.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace communication between VS Code and the Doggo language server."
+        },
+        "doggo.debug.indentTrace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log newline edits and matched indentation rules to Doggo output for troubleshooting auto-indent."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "clean": "rimraf out dist .vscode-test",
+    "verify:node": "node scripts/check-node-version.js",
+    "pretest": "npm run verify:node",
+    "preverify": "npm run verify:node",
+    "prepackage": "npm run verify:node",
+    "compile:tests": "tsc -p .",
+    "bundle": "node esbuild.config.mjs",
+    "compile": "npm run compile:tests && npm run bundle",
+    "watch": "tsc -w -p .",
+    "test": "npm run compile:tests && node --test out/test/*.test.js scripts/licenses.test.mjs",
+    "package:list": "vsce ls",
+    "licenses:check": "node esbuild.config.mjs --check-notices",
+    "verify": "npm run test && npm run bundle && npm run licenses:check && npm run package:list",
+    "package": "npm run clean && npm run bundle && vsce package -o dist/doggo-vscode.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.25.0",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.8.2",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.3.2"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

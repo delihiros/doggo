@@ -1,0 +1,95 @@
+; =====================
+; Doggo Set Library
+; =====================
+(ns doggo.set)
+
+(def ^:private -union (fn [& sets] (apply union sets)))
+(def ^:private -intersection (fn [& sets] (apply intersection sets)))
+(def ^:private -difference (fn [& sets] (apply difference sets)))
+(def ^:private -subset? (fn [a b] (subset? a b)))
+(def ^:private -superset? (fn [a b] (superset? a b)))
+
+(def union -union)
+(def intersection -intersection)
+(def difference -difference)
+(def subset? -subset?)
+(def superset? -superset?)
+
+(def select
+  (fn [pred xset]
+    (into #{} (filter pred xset))))
+
+(def project
+  (fn [xrel ks]
+    (into #{} (map (fn [m] (select-keys m ks)) xrel))))
+
+(def rename-keys
+  (fn [m kmap]
+    (reduce-kv (fn [acc old new]
+        (if (contains? acc old)
+          (-> acc
+            (assoc new (get acc old))
+            (dissoc old))
+          acc))
+      m
+      kmap)))
+
+(def rename
+  (fn [xrel kmap]
+    (into #{} (map (fn [m] (rename-keys m kmap)) xrel))))
+
+(def index
+  (fn [xrel ks]
+    (reduce (fn [acc item]
+        (let [ik (select-keys item ks)
+            bucket (or (get acc ik) #{})]
+          (assoc acc ik (conj bucket item))))
+      {}
+      xrel)))
+
+(def map-invert
+  (fn [m]
+    (reduce-kv (fn [acc k v] (assoc acc v k)) {} m)))
+
+(def ^:private -pairs-from-keymap
+  (fn [kmap]
+    (reduce-kv (fn [pairs old new]
+        (conj pairs [old new]))
+      []
+      kmap)))
+
+(def ^:private -pairs-from-common-keys
+  (fn [xrel yrel]
+    (if (or (empty? xrel) (empty? yrel))
+      []
+      (let [xsample (first (seq xrel))
+          ysample (first (seq yrel))
+          common (intersection (into #{} (keys xsample))
+            (into #{} (keys ysample)))]
+        (map (fn [k] [k k]) common)))))
+
+(def ^:private -matches-pairs?
+  (fn [x y pairs]
+    (every? (fn [pair]
+        (= (get x (first pair))
+          (get y (first (rest pair)))))
+      pairs)))
+
+(def ^:private -join-with-pairs
+  (fn [xrel yrel pairs]
+    (reduce (fn [acc x]
+        (reduce (fn [inner y]
+            (if (-matches-pairs? x y pairs)
+              (conj inner (merge x y))
+              inner))
+          acc
+          yrel))
+      #{}
+      xrel)))
+
+(def join
+  (fn
+    ([xrel yrel]
+      (-join-with-pairs xrel yrel (-pairs-from-common-keys xrel yrel)))
+    ([xrel yrel kmap]
+      (-join-with-pairs xrel yrel (-pairs-from-keymap kmap)))))

@@ -1,0 +1,338 @@
+; =====================
+; Doggo CLI Library
+; =====================
+(ns doggo.cli
+  (:require [doggo.string :as str]))
+
+(def ^:dynamic *command-line-args* (command-line-args*))
+
+(def ^:private -illegal-argument
+  (fn [message]
+    (throw (ex-info message
+        {:kind :invalid-argument
+          :function 'doggo.cli/parse-args}))))
+
+(def ^:private -normalize-argv
+  (fn [args]
+    (cond
+      (nil? args) []
+      (vector? args) args
+      (sequential? args) (vec args)
+      :else
+      (-illegal-argument "doggo.cli/parse-args: expected sequential args"))))
+
+(def ^:private -option-token?
+  (fn [token]
+    (and (string? token)
+      (not (= token "-"))
+      (str/starts-with? token "-"))))
+
+(def ^:private -option-text
+  (fn [value context]
+    (cond
+      (string? value) value
+      (symbol? value) (str value)
+      (keyword? value) (subs (str value) 1)
+      :else
+      (-illegal-argument
+        (str "doggo.cli/parse-args: "
+          context
+          " must be a string, symbol, or keyword")))))
+
+(def ^:private -option-name
+  (fn [raw]
+    (if (= 0 (count raw))
+      (-illegal-argument "doggo.cli/parse-args: option name must not be empty")
+      raw)))
+
+(def ^:private -option-key
+  (fn [value context]
+    (keyword (-option-name (-option-text value context)))))
+
+(def ^:private -validate-long-option-name
+  (fn [option-name]
+    (cond
+      (str/starts-with? option-name "-")
+      (-illegal-argument
+        (str "doggo.cli/parse-args: option name "
+          option-name
+          " must not start with -"))
+
+      (not (= -1 (str/index-of option-name "=")))
+      (-illegal-argument
+        (str "doggo.cli/parse-args: option name "
+          option-name
+          " must not contain ="))
+
+      :else
+      option-name)))
+
+(def ^:private -long-option-label
+  (fn [option]
+    (str "--" (:name option))))
+
+(def ^:private -short-option-label
+  (fn [option]
+    (str "-" (:short option))))
+
+(def ^:private -normalize-option-type
+  (fn [option-key option-type]
+    (if (or (= option-type :string)
+        (= option-type :boolean))
+      option-type
+      (-illegal-argument
+        (str "doggo.cli/parse-args: option type for "
+          option-key
+          " must be :string or :boolean")))))
+
+(def ^:private -normalize-short-option
+  (fn [option-key option-name raw-short]
+    (let [short (if (nil? raw-short)
+          (if (= 1 (count option-name))
+            option-name
+            nil)
+          (-option-text raw-short (str "short option for " option-key)))]
+      (cond
+        (nil? short)
+        nil
+
+        (= short "-")
+        (-illegal-argument
+          (str "doggo.cli/parse-args: short option for "
+            option-key
+            " must not be -"))
+
+        (= 1 (count short))
+        short
+
+        :else
+        (-illegal-argument
+          (str "doggo.cli/parse-args: short option for "
+            option-key
+            " must be a single character"))))))
+
+(def ^:private -validate-negation-conflict
+  (fn [acc option-name option-type]
+    (let [negated-name (str "no-" option-name)
+        existing-negated (get (:long-options acc) negated-name)
+        positive-name (if (and (str/starts-with? option-name "no-")
+            (> (count option-name) 3))
+          (subs option-name 3)
+          nil)
+        existing-positive (if positive-name
+          (get (:long-options acc) positive-name)
+          nil)]
+      (cond
+        (and (= option-type :boolean)
+          (not (nil? existing-negated)))
+        (-illegal-argument
+          (str "doggo.cli/parse-args: option --"
+            negated-name
+            " conflicts with boolean negation of --"
+            option-name))
+
+        (and (not (nil? existing-positive))
+          (= (:type existing-positive) :boolean))
+        (-illegal-argument
+          (str "doggo.cli/parse-args: option --"
+            option-name
+            " conflicts with boolean negation of --"
+            positive-name))
+
+        :else
+        nil))))
+
+(def ^:private -normalize-option-spec
+  (fn [spec]
+    (if (not (map? spec))
+      (-illegal-argument "doggo.cli/parse-args: expected option spec map")
+      (loop [entries (seq spec)
+          acc {:long-options {}
+            :short-options {}}]
+        (if (empty? entries)
+          acc
+          (let [entry (first entries)
+              raw-key (key entry)
+              config (val entry)]
+            (if (not (map? config))
+              (-illegal-argument
+                (str "doggo.cli/parse-args: option spec for "
+                  raw-key
+                  " must be a map"))
+              (let [option-key (-option-key raw-key "option name")
+                  option-name (-validate-long-option-name
+                    (-option-text option-key "option name"))
+                  option-type (-normalize-option-type option-key (get config :type :string))
+                  short-option (-normalize-short-option option-key option-name (get config :short nil))
+                  option {:key option-key
+                    :name option-name
+                    :type option-type
+                    :short short-option}]
+                (if (contains? (:long-options acc) option-name)
+                  (-illegal-argument
+                    (str "doggo.cli/parse-args: duplicate long option --"
+                      option-name))
+                  (do
+                    (-validate-negation-conflict acc option-name option-type)
+                    (if (and short-option
+                        (contains? (:short-options acc) short-option))
+                      (-illegal-argument
+                        (str "doggo.cli/parse-args: duplicate short option -"
+                          short-option))
+                      (recur (rest entries)
+                        {:long-options (assoc (:long-options acc) option-name option)
+                          :short-options (if short-option
+                            (assoc (:short-options acc) short-option option)
+                            (:short-options acc))}))))))))))))
+
+(def ^:private -lookup-long-option
+  (fn [spec option-name token]
+    (let [option (get (:long-options spec) option-name)]
+      (if (nil? option)
+        (-illegal-argument (str "doggo.cli/parse-args: unknown option " token))
+        option))))
+
+(def ^:private -find-long-option
+  (fn [spec option-name]
+    (get (:long-options spec) option-name)))
+
+(def ^:private -lookup-short-option
+  (fn [spec short-option]
+    (let [option (get (:short-options spec) short-option)]
+      (if (nil? option)
+        (-illegal-argument (str "doggo.cli/parse-args: unknown option -" short-option))
+        option))))
+
+(def ^:private -next-option-value
+  (fn [option-label attached-example remaining]
+    (if (empty? remaining)
+      (-illegal-argument (str "doggo.cli/parse-args: missing value for " option-label))
+      (let [value (first remaining)]
+        (if (-option-token? value)
+          (-illegal-argument
+            (str "doggo.cli/parse-args: value for "
+              option-label
+              " must use "
+              attached-example
+              " when it starts with -"))
+          [value (rest remaining)])))))
+
+(def ^:private -parse-long-option
+  (fn [spec token remaining]
+    (let [body (subs token 2)
+        eq-index (str/index-of body "=")]
+      (if (< eq-index 0)
+        (let [name (-option-name body)]
+          (let [option (-find-long-option spec name)]
+            (if (nil? option)
+              (if (and (str/starts-with? name "no-")
+                  (> (count name) 3))
+                (let [negated-option (-lookup-long-option spec (subs name 3) token)]
+                  (if (= (:type negated-option) :boolean)
+                    [{(:key negated-option) false} remaining]
+                    (-illegal-argument
+                      (str "doggo.cli/parse-args: "
+                        token
+                        " only supports boolean options"))))
+                (-illegal-argument (str "doggo.cli/parse-args: unknown option " token)))
+              (if (= (:type option) :boolean)
+                [{(:key option) true} remaining]
+                (let [[value next-remaining] (-next-option-value (-long-option-label option)
+                      (str (-long-option-label option) "=<value>")
+                      remaining)]
+                  [{(:key option) value} next-remaining])))))
+        (let [name (-option-name (subs body 0 eq-index))
+            value (subs body (inc eq-index))
+            option (-lookup-long-option spec name (str "--" name))]
+          (if (= (:type option) :boolean)
+            (-illegal-argument
+              (str "doggo.cli/parse-args: boolean option "
+                (-long-option-label option)
+                " does not take a value"))
+            [{(:key option) value} remaining]))))))
+
+(def ^:private -attached-short-option-value
+  (fn [raw value-start]
+    (let [attached-value (subs raw value-start)]
+      (if (= 0 (count attached-value))
+        nil
+        (if (str/starts-with? attached-value "=")
+          (subs attached-value 1)
+          attached-value)))))
+
+(def ^:private -parse-short-option
+  (fn [spec token remaining]
+    (let [raw (subs token 1)]
+      (loop [idx 0
+          options {}]
+        (if (< idx (count raw))
+          (let [short-option (subs raw idx (inc idx))
+              option (-lookup-short-option spec short-option)]
+            (if (= (:type option) :boolean)
+              (recur (inc idx)
+                (assoc options
+                  (:key option)
+                  true))
+              (let [attached-value (-attached-short-option-value raw (inc idx))]
+                (if (nil? attached-value)
+                  (let [[value next-remaining] (-next-option-value (-short-option-label option)
+                        (str (-short-option-label option) "=<value>")
+                        remaining)]
+                    [(assoc options (:key option) value) next-remaining])
+                  [(assoc options (:key option) attached-value) remaining]))))
+          [options remaining])))))
+
+(def command-line-args
+  (fn []
+    *command-line-args*))
+
+(def entrypoint?
+  (fn []
+    (entrypoint?*)))
+
+(def parse-args
+  (fn
+    ([spec] (parse-args spec *command-line-args*))
+    ([spec args]
+      (let [normalized-spec (-normalize-option-spec spec)]
+        (loop [remaining (seq (-normalize-argv args))
+            options {}
+            arguments []
+            parsing-options? true]
+          (if (empty? remaining)
+            {:options options
+              :arguments arguments}
+            (let [token (first remaining)
+                next-remaining (rest remaining)]
+              (if parsing-options?
+                (cond
+                  (= token "--")
+                  (recur next-remaining options arguments false)
+
+                  (and (string? token)
+                    (str/starts-with? token "--"))
+                  (let [[parsed-options updated-remaining] (-parse-long-option normalized-spec token next-remaining)]
+                    (recur updated-remaining
+                      (merge options parsed-options)
+                      arguments
+                      true))
+
+                  (-option-token? token)
+                  (let [[parsed-options updated-remaining] (-parse-short-option normalized-spec token next-remaining)]
+                    (recur updated-remaining
+                      (merge options parsed-options)
+                      arguments
+                      true))
+
+                  :else
+                  (recur next-remaining options (conj arguments token) true))
+                (recur next-remaining options (conj arguments token) false)))))))))
+
+(def main
+  (fn
+    ([f]
+      (apply f (or *command-line-args* [])))
+    ([f args]
+      (let [argv (if (nil? args) nil (vec args))]
+        (binding [*command-line-args* argv]
+          (apply f (or argv [])))))))

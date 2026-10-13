@@ -1,0 +1,5 @@
+(ns doggo.uuid)
+
+(def parse uuid-parse*)
+(def random uuid-random*)
+(def uuid? uuid-predicate*)

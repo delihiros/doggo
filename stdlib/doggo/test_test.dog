@@ -1,0 +1,143 @@
+; =====================
+; doggo.test tests
+; =====================
+(ns doggo.test_test
+  (:require [doggo.test :as t]))
+
+(def throw-boom
+  (fn []
+    (throw (ex-info "kaboom" {:kind :boom}))))
+
+(t/deftest are-and-throwing-assertions-work
+  (t/are [lhs rhs] (= lhs rhs)
+    (+ 1 1) 2
+    (count [1 2 3]) 3)
+  (t/is (t/thrown? (throw-boom)))
+  (t/is (t/thrown-with-msg? #"boom" (throw-boom))))
+
+(t/deftest test-vars-rejects-unknown-targets
+  (t/is (t/thrown?
+      (t/test-vars ['missing-test]))))
+
+(t/deftest normal-test-kind-fixture
+  (t/is true))
+
+(def *captured-report-kinds* (atom []))
+
+(t/deftest report-hook-captures-test-kind
+  (reset! *captured-report-kinds* [])
+  (t/set-report-hook!
+    (fn [case]
+      (swap! *captured-report-kinds* conj (:kind case))))
+  (try
+    (t/test-vars '([doggo.test_test normal-test-kind-fixture]
+        [doggo.test_test defproperty-accepts-pass-report]))
+    (finally
+      (t/clear-report-hook!)))
+  (t/is (= [:property :test] @*captured-report-kinds*)))
+
+(t/deftest is-check-pass-accepts-pass-report
+  (t/is (= true
+      (t/is-check-pass {:pass? true
+          :iterations 1
+          :seed 1
+          :failing-input nil
+          :shrunk-input nil
+          :shrink-steps []
+          :failure nil
+          :explain nil}))))
+
+(t/deftest is-check-pass-fails-with-property-payload
+  (let [case (t/run-single-test
+        '[doggo.test_test synthetic-is-check-pass-fails]
+        (fn []
+          (t/is-check-pass {:pass? false
+              :iterations 1
+              :seed 1
+              :failing-input [42]
+              :shrunk-input [0]
+              :shrink-steps [[42] [0]]
+              :failure {:kind :return-false}
+              :explain nil})))]
+    (t/is (= :fail (:status case)))
+    (t/is (= {:pass? true} (:expected case)))
+    (t/is (= false (:pass? (:actual case))))))
+
+(t/deftest is-check-pass-preserves-optional-message
+  (let [case (t/run-single-test
+        '[doggo.test_test synthetic-is-check-pass-message]
+        (fn []
+          (t/is-check-pass {:pass? false
+              :iterations 1
+              :seed 1
+              :failing-input [42]
+              :shrunk-input [0]
+              :shrink-steps []
+              :failure {:kind :return-false}
+              :explain nil}
+            "property failed")))]
+    (t/is (= :fail (:status case)))
+    (t/is (= "property failed" (:message case)))))
+
+(t/deftest is-check-pass-malformed-input-becomes-error
+  (let [case (t/run-single-test
+        '[doggo.test_test synthetic-is-check-pass-malformed]
+        (fn []
+          (t/is-check-pass "not a report")))]
+    (t/is (= :error (:status case)))))
+
+(t/deftest equality-failure-records-expected-and-actual
+  (let [case (t/run-single-test
+        '[doggo.test_test synthetic-equality-failure]
+        (fn [] (t/is (= 1 2) "eq failure")))]
+    (t/is (= [:fail 1 2]
+        [(:status case) (:expected case) (:actual case)]))))
+
+(t/defproperty defproperty-accepts-pass-report
+  {:seed 7 :iterations 2}
+  [x :int]
+  true)
+
+(t/deftest defproperty-fails-with-property-payload
+  (let [case (t/run-single-test
+        '[doggo.test_test synthetic-defproperty-fails-with-property-payload]
+        (fn []
+          (t/is-check-pass
+            (doggo.schema/for-all {:seed 1
+                :iterations 1
+                :generator-overrides {:int 42}
+                :shrink-limit 5}
+              [x :int]
+              false))))]
+    (t/is (= :fail (:status case)))
+    (t/is (= false (:pass? (:actual case))))))
+
+(t/defproperty defproperty-accepts-no-options
+  [x [:enum :ok]]
+  (= x :ok))
+
+(ns doggo.test-fixture-specimen
+  (:require [doggo.test :as t]))
+
+(def once-count (atom 0))
+(def each-count (atom 0))
+
+(t/use-fixtures :once (fn [f] (swap! once-count inc) (f)))
+(t/use-fixtures :each (fn [f] (swap! each-count inc) (f)))
+
+(t/deftest fixture-alpha (t/is true))
+(t/deftest fixture-beta (t/is true))
+
+(ns doggo.test_test
+  (:require [doggo.test :as t]))
+
+(t/deftest fixtures-wrap-selected-tests
+  (reset! doggo.test-fixture-specimen/once-count 0)
+  (reset! doggo.test-fixture-specimen/each-count 0)
+  (let [result (t/test-vars
+        '([doggo.test-fixture-specimen fixture-alpha]
+          [doggo.test-fixture-specimen fixture-beta]))]
+    (t/is (= [2 1 2]
+        [(:test (:summary result))
+          @doggo.test-fixture-specimen/once-count
+          @doggo.test-fixture-specimen/each-count]))))

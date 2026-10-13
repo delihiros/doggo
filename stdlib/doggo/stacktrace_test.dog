@@ -1,0 +1,146 @@
+; =====================
+; doggo.stacktrace tests
+; =====================
+(ns doggo.stacktrace-test
+  (:require [doggo.repl :as repl]
+    [doggo.stacktrace :as st]
+    [doggo.string :as str]
+    [doggo.test :as t]))
+
+(def nested-exception
+  (ex-info "outer" {:kind :outer}
+    (ex-info "boom" {:kind :inner})))
+
+(def stacktrace-boom
+  (fn boom []
+    (throw (ex-info "boom" {:kind :inner}))))
+
+(def stacktrace-outer
+  (fn outer []
+    (stacktrace-boom)))
+
+(t/deftest stacktrace-cause-helpers
+  (t/is (= :inner (:kind (ex-data (st/root-cause nested-exception)))))
+  (t/is (= [":outer: outer" ":inner: boom"]
+      (vec (map st/format-exception (st/cause-chain nested-exception))))))
+
+(t/deftest stacktrace-renders-cause-trace
+  (let [rendered (st/format-cause-trace nested-exception)]
+    (t/is (str/includes? rendered "[0] :outer: outer"))
+    (t/is (str/includes? rendered "[1] :inner: boom"))
+    (t/is (= nil (st/print-cause-trace nested-exception)))))
+
+(t/deftest stacktrace-renders-stack-trace-with-frames
+  (let [captured (try
+        ((fn boom [] (throw (ex-info "boom" {:kind :inner}))))
+        (catch [e] e))
+      rendered (st/format-stack-trace captured)]
+    (t/is (str/includes? rendered "[0] :inner: boom"))
+    (t/is (str/includes? rendered "in boom"))
+    (t/is (= nil (st/print-stack-trace captured)))))
+
+(t/deftest stacktrace-supports-depth-limited-rendering
+  (let [captured (try
+        ((fn boom [] (throw (ex-info "boom" {:kind :inner}))))
+        (catch [e] e))
+      rendered (st/format-stack-trace captured {:depth 1})]
+    (t/is (= 2 (count (str/split-lines rendered))))
+    (t/is (str/includes? rendered "[0] :inner: boom"))
+    (t/is (str/includes? rendered "in boom"))))
+
+(t/deftest stacktrace-supports-frame-filtering
+  (let [captured (try
+        (stacktrace-outer)
+        (catch [e] e))
+      boom-frame (first (st/stack-frames captured))
+      filtered (st/filter-stack-frames
+        captured
+        (fn [frame] (str/includes? frame "boom")))
+      set-filtered (st/filter-stack-frames
+        captured
+        #{boom-frame})
+      rendered (st/format-stack-trace
+        captured
+        {:depth 1
+          :filter (fn [frame] (str/includes? frame "boom"))})]
+    (t/is (= 1 (count filtered)))
+    (t/is (every? (fn [frame] (str/includes? frame "boom")) filtered))
+    (t/is (= [boom-frame] set-filtered))
+    (t/is (= 2 (count (str/split-lines rendered))))
+    (t/is (str/includes? rendered "in boom"))
+    (t/is (not (str/includes? rendered "in outer")))))
+
+(t/deftest stacktrace-root-cause-stops-at-last-exception
+  (let [with-raw-cause (ex-info "outer" {:kind :outer})]
+    (t/is (= :outer
+        (:kind (ex-data (st/root-cause with-raw-cause)))))
+    (t/is (= "outer"
+        (ex-message (st/root-cause with-raw-cause))))
+    (t/is (= (pr-str (repl/root-cause with-raw-cause))
+        (pr-str (st/root-cause with-raw-cause))))
+    (t/is (= [":outer: outer"]
+        (vec (map st/format-exception (st/cause-chain with-raw-cause)))))))
+
+(t/deftest stacktrace-format-exception-rejects-non-exception-values
+  (t/is (t/thrown-with-msg?
+      #"expects error"
+      (st/format-exception 42))))
+
+(t/deftest stacktrace-helpers-reject-non-exception-values
+  (t/is (t/thrown-with-msg?
+      #"expects error"
+      (st/root-cause 42)))
+  (t/is (t/thrown-with-msg?
+      #"expects error"
+      (st/cause-chain nil)))
+  (t/is (t/thrown-with-msg?
+      #"expects error"
+      (st/print-cause-trace 42)))
+  (t/is (t/thrown-with-msg?
+      #"doggo.stacktrace/filter-stack-frames: predicate must be a callable predicate"
+      (st/filter-stack-frames
+        (ex-info "boom" {:kind :inner})
+        42)))
+  (t/is (t/thrown-with-msg?
+      #"doggo.stacktrace/format-stack-trace: expected option map"
+      (st/format-stack-trace
+        (ex-info "boom" {:kind :inner})
+        1)))
+  (let [data (try
+        (st/format-stack-trace (ex-info "boom" {:kind :inner}) 1)
+        nil
+        (catch [e] (ex-data e)))]
+    (t/is (= 'doggo.stacktrace/format-stack-trace (:function data)))
+    (t/is (= :options (:argument data)))
+    (t/is (= "map" (:expected data)))
+    (t/is (= 1 (:actual data))))
+  (t/is (t/thrown-with-msg?
+      #"doggo.stacktrace/format-stack-trace: unsupported option :bad"
+      (repl/pst {:bad true})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.stacktrace/format-stack-trace: unsupported option :bad"
+      (st/format-stack-trace
+        (ex-info "boom" {:kind :inner})
+        {:bad true})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.stacktrace/format-stack-trace: option :filter must be a callable predicate"
+      (st/format-stack-trace
+        (ex-info "boom" {:kind :inner})
+        {:filter 42})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.stacktrace/format-stack-trace: option :depth must be number"
+      (st/format-stack-trace
+        (ex-info "boom" {:kind :inner})
+        {:depth "bad"})))
+  (let [captured (try
+        (stacktrace-outer)
+        (catch [e] e))]
+    (t/is (= []
+        (st/filter-stack-frames captured {})))
+    (t/is (= "[0] :inner: boom"
+        (st/format-stack-trace captured {:depth -1})))
+    (t/is (= 3
+        (count (str/split-lines
+            (st/format-stack-trace captured {:depth 1.5})))))
+    (t/is (= "[0] :inner: boom"
+        (st/format-stack-trace captured {:filter {}})))))

@@ -1,0 +1,21 @@
+; =====================
+; doggo.data tests
+; =====================
+(ns doggo.data-test
+  (:require [doggo.data :as data]
+    [doggo.test :as t]))
+
+(t/deftest diff-handles-scalars
+  (t/is (= [1 2 nil] (data/diff 1 2)))
+  (t/is (= [nil nil 1] (data/diff 1 1))))
+
+(t/deftest diff-handles-collections
+  (t/is (= [{:b 2} {:b 3} {:a 1}]
+      (data/diff {:a 1 :b 2}
+        {:a 1 :b 3})))
+  (t/is (= [[nil 2] [nil 4 nil 5] [1 nil 3]]
+      (data/diff [1 2 3]
+        [1 4 3 5])))
+  (t/is (= [#{1} #{4} #{2 3}]
+      (data/diff #{1 2 3}
+        #{2 3 4}))))

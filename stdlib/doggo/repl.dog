@@ -1,0 +1,64 @@
+; =====================
+; Doggo REPL helpers
+; =====================
+(ns doggo.repl
+  (:require [doggo.stacktrace :as stacktrace]))
+
+(def ^:private -default-pst-options
+  (fn [options]
+    (if (map? options)
+      (if (contains? options :depth)
+        options
+        (assoc options :depth 12))
+      options)))
+
+(def source-str
+  (fn [sym]
+    (source-str* sym)))
+
+(def apropos
+  (fn [query]
+    (apropos* query)))
+
+(def dir
+  (fn [ns-sym]
+    (dir* ns-sym)))
+
+(def find-doc
+  (fn [query]
+    (find-doc* query)))
+
+(def root-cause
+  (fn [exception]
+    (stacktrace/root-cause exception)))
+
+(def pst
+  (fn
+    ([] (pst {:depth 12}))
+    ([exception-or-options]
+      (if (map? exception-or-options)
+        (let [options (-default-pst-options exception-or-options)
+            e (last-exception*)]
+          (if (some? e)
+            (pst (stacktrace/root-cause e) options)
+            (do
+              (stacktrace/format-stack-trace (ex-info "" {}) options)
+              nil)))
+        (pst exception-or-options {:depth 12})))
+    ([exception options]
+      (stacktrace/print-stack-trace exception
+        (-default-pst-options options)))))
+
+; doc - show symbol documentation metadata
+; Usage: (doc map), (doc my-fn)
+(defmacro doc [sym]
+  `(do
+    (println (doc* '~sym))
+    nil))
+
+; source - show full top-level definition form
+; Usage: (source map), (source my-fn)
+(defmacro source [sym]
+  `(do
+    (println (source-str '~sym))
+    nil))

@@ -1,0 +1,26 @@
+; =====================
+; doggo.template tests
+; =====================
+(ns doggo.template-test
+  (:require [doggo.template :as template]
+    [doggo.test :as t]))
+
+(t/deftest apply-template-replaces-symbols-recursively
+  (t/is (= '(+ 2 (* 2 3))
+      (template/apply-template '[x] '(+ x (* x 3)) [2])))
+  (t/is (= '(vector :a 1 [:a 1])
+      (template/apply-template '[k v] '(vector k v [k v]) [:a 1]))))
+
+(t/deftest apply-template-validates-argv
+  (t/is (t/thrown-with-msg?
+      #"argv must be a vector"
+      (template/apply-template 'x '(inc x) [1])))
+  (t/is (t/thrown-with-msg?
+      #"argv must contain only symbols"
+      (template/apply-template '[x 1] '(inc x) [1]))))
+
+(t/deftest do-template-expands-like-clojure-template
+  (t/is (= '(do (+ 4 2) (+ 5 3))
+      (macroexpand '(template/do-template [x y] (+ y x) 2 4 3 5))))
+  (t/is (= '(do)
+      (macroexpand '(template/do-template [] (inc 1) 1 2 3)))))

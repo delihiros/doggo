@@ -1,0 +1,147 @@
+; =====================
+; doggo.time tests
+; =====================
+(ns doggo.time-test
+  (:require [doggo.edn :as edn]
+    [doggo.instant :as inst]
+    [doggo.time :as time]
+    [doggo.test :as t]))
+
+(t/deftest now-returns-shared-instant-shape
+  (let [instant (time/now)]
+    (t/is (string? (:instant instant)))
+    (t/is (number? (:epoch-millis instant)))
+    (t/is (= 0 (:offset-seconds instant)))))
+
+(t/deftest duration-constructors-return-duration-maps
+  (t/is (= {:millis 1} (time/millis 1)))
+  (t/is (= {:millis 2000} (time/seconds 2)))
+  (t/is (= {:millis 180000} (time/minutes 3)))
+  (t/is (= {:millis 14400000} (time/hours 4)))
+  (t/is (= {:millis 432000000} (time/days 5))))
+
+(t/deftest sleep-accepts-milliseconds-and-duration-maps
+  (t/is (nil? (time/sleep 0)))
+  (t/is (nil? (time/sleep (time/millis 0))))
+  (t/is (nil? (time/sleep (time/seconds 0)))))
+
+(t/deftest plus-and-minus-work-on-instants-and-durations
+  (let [base {:instant "2024-01-02T03:04:05Z" :epoch-millis 1704164645000 :offset-seconds 0}
+      advanced (time/plus base (time/minutes 1))]
+    (t/is (= "2024-01-02T03:05:05Z" (:instant advanced)))
+    (t/is (= 1704164705000 (:epoch-millis advanced)))
+    (t/is (= {:millis 60000} (time/minus advanced base)))
+    (t/is (= {:millis 60000}
+        (time/minus advanced
+          (edn/read-string "#inst \"2024-01-02T03:04:05Z\""))))
+    (t/is (= "2024-01-02T03:04:05Z" (:instant (time/minus advanced (time/minutes 1)))))))
+
+(t/deftest compare-and-ordering-use-epoch-millis
+  (let [a {:instant "2024-01-02T03:04:05Z" :epoch-millis 1704164645000 :offset-seconds 0}
+      b {:instant "2024-01-02T03:05:05Z" :epoch-millis 1704164705000 :offset-seconds 0}]
+    (t/is (= 0 (time/compare a a)))
+    (t/is (= -1 (time/compare a b)))
+    (t/is (= 1 (time/compare b a)))
+    (t/is (time/before? a b))
+    (t/is (time/after? b a))))
+
+(t/deftest format-and-from-epoch-millis-roundtrip
+  (let [instant (time/from-epoch-millis 1704164645000)]
+    (t/is (= "2024-01-02T03:04:05Z" (time/format instant)))
+    (t/is (= instant (time/from-epoch-millis (:epoch-millis instant))))))
+
+(t/deftest format-supports-offset-aware-rendering
+  (let [instant (inst/parse-timestamp "2024-01-02T12:04:05+09:00")
+      advanced (time/plus instant (time/minutes 1))]
+    (t/is (= "2024-01-02T03:04:05Z" (time/format instant)))
+    (t/is (= "2024-01-02T12:04:05+09:00"
+        (time/format instant {:offset :preserve})))
+    (t/is (= "2024-01-01T22:04:05-05:00"
+        (time/format instant {:offset-seconds -18000})))
+    (t/is (= "2024-01-02T12:05:05+09:00"
+        (time/format advanced {:offset :preserve})))))
+
+(t/deftest from-epoch-millis-preserves-large-integer-values
+  (let [millis 9007199254740993
+      instant (time/from-epoch-millis millis)]
+    (t/is (= millis (:epoch-millis instant)))))
+
+(t/deftest from-epoch-millis-handles-rounded-float-boundary-like-clojure
+  (let [instant (time/from-epoch-millis 9.223372036854776e18)]
+    (t/is (= 9223372036854775807 (:epoch-millis instant)))))
+
+(t/deftest from-epoch-millis-handles-negative-rounded-float-boundary-like-clojure
+  (let [instant (time/from-epoch-millis -9.223372036854776e18)]
+    (t/is (= -9223372036854775808 (:epoch-millis instant)))))
+
+(t/deftest rejects-invalid-values
+  (t/is (t/thrown-with-msg?
+      #"sleep: expected integer milliseconds"
+      (time/sleep 1.5)))
+  (t/is (t/thrown-with-msg?
+      #"sleep: expected non-negative milliseconds"
+      (time/sleep -1)))
+  (t/is (t/thrown-with-msg?
+      #"sleep: expected non-negative milliseconds"
+      (time/sleep (time/millis -1))))
+  (t/is (t/thrown-with-msg?
+      #"sleep: milliseconds out of supported range"
+      (time/sleep 9223372036855)))
+  (t/is (t/thrown-with-msg?
+      #"doggo.time instant must have :instant"
+      (time/plus {} (time/seconds 1))))
+  (t/is (t/thrown-with-msg?
+      #"from-epoch-millis"
+      (time/from-epoch-millis 9.223372036854778e18)))
+  (t/is (t/thrown-with-msg?
+      #"from-epoch-millis"
+      (time/from-epoch-millis -9.223372036854778e18)))
+  (t/is (t/thrown-with-msg?
+      #"doggo.time instant must have :offset-seconds"
+      (time/plus {:instant "2024-01-02T03:04:05Z"
+          :epoch-millis 1704164645000}
+        (time/seconds 1))))
+  (t/is (t/thrown-with-msg?
+      #"doggo.time instant must have :epoch-millis"
+      (time/epoch-millis {:instant "2024-01-02T03:04:05Z"
+          :epoch-millis 1.5
+          :offset-seconds 0})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.time instant must have :offset-seconds"
+      (time/offset-seconds {:instant "2024-01-02T03:04:05Z"
+          :epoch-millis 1704164645000
+          :offset-seconds 0.5})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.time instant must have :instant"
+      (time/format {:instant "2024-01-02"
+          :epoch-millis 1704153600000
+          :offset-seconds 0})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.time instant must have :epoch-millis"
+      (time/format {:instant "2024-01-02T03:04:05Z"
+          :epoch-millis 0
+          :offset-seconds 0})))
+  (t/is (t/thrown-with-msg?
+      #"doggo\.time/format: expected option map"
+      (time/format (time/now) :bad)))
+  (t/is (t/thrown-with-msg?
+      #"doggo\.time/format: unsupported option :bad"
+      (time/format (time/now) {:bad true})))
+  (t/is (t/thrown-with-msg?
+      #"doggo\.time/format: option :offset must be :utc or :preserve"
+      (time/format (time/now) {:offset :local})))
+  (t/is (t/thrown-with-msg?
+      #"doggo\.time/format: options :offset and :offset-seconds must not be used together"
+      (time/format (time/now) {:offset :preserve :offset-seconds 0})))
+  (t/is (t/thrown-with-msg?
+      #"doggo\.time/format: option :offset-seconds must be integer"
+      (time/format (time/now) {:offset-seconds 1.5})))
+  (t/is (t/thrown-with-msg?
+      #"doggo\.time/format: option :offset-seconds must be whole minutes within RFC3339 range"
+      (time/format (time/now) {:offset-seconds 1})))
+  (t/is (t/thrown-with-msg?
+      #"doggo\.time/format: option :offset-seconds must be whole minutes within RFC3339 range"
+      (time/format (time/now) {:offset-seconds 90000})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.time duration must have :millis"
+      (time/plus (time/now) {}))))

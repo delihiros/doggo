@@ -1,0 +1,85 @@
+; =====================
+; Doggo Observability Library
+; =====================
+(ns doggo.observability)
+
+(def ^:private -log! log!)
+(def ^:private -correlation-id correlation-id)
+(def ^:private -trace-id trace-id)
+(def ^:private -with-span with-span)
+(def ^:private -metric-inc! metric-inc!)
+(def ^:private -metric-set-gauge! metric-set-gauge!)
+(def ^:private -metric-observe! metric-observe!)
+(def ^:private -metrics-snapshot metrics-snapshot)
+
+(def ^:private -type-name
+  (fn [value]
+    (if (nil? value) "nil" (type-name value))))
+
+(def ^:private -event-fields
+  (fn [fields]
+    (cond
+      (nil? fields) {}
+      (map? fields) fields
+      :else
+      (throw (ex-info
+          (str "doggo.observability/event!: fields must be map or nil, got "
+            (-type-name fields))
+          {:kind :invalid-argument
+            :function 'doggo.observability/event!
+            :argument :fields
+            :actual fields})))))
+
+(def ^:private -event-fields-map
+  (fn [fields]
+    (if (map? fields)
+      fields
+      (throw (ex-info
+          (str "doggo.observability/event!: 2-arg form requires fields map, got "
+            (-type-name fields)
+            "; use (event! level event fields) for explicit level")
+          {:kind :invalid-argument
+            :function 'doggo.observability/event!
+            :argument :fields
+            :actual fields})))))
+
+(def ^:private -event-log!
+  (fn [level event fields]
+    (let [context (assoc (-event-fields fields) :event event)]
+      (-log! level event context))))
+
+(def log! -log!)
+
+(def correlation-id -correlation-id)
+(def trace-id -trace-id)
+(def with-span -with-span)
+
+(def metric-inc! -metric-inc!)
+(def metric-set-gauge! -metric-set-gauge!)
+(def metric-observe! -metric-observe!)
+(def metrics-snapshot -metrics-snapshot)
+
+(def event!
+  (fn
+    ([event]
+      (-event-log! :info event nil))
+    ([event fields]
+      (-event-log! :info event (-event-fields-map fields)))
+    ([level event fields]
+      (-event-log! level event fields))))
+
+(def debug
+  (fn [message & args]
+    (apply -log! (concat [:debug message] args))))
+
+(def info
+  (fn [message & args]
+    (apply -log! (concat [:info message] args))))
+
+(def warn
+  (fn [message & args]
+    (apply -log! (concat [:warn message] args))))
+
+(def error
+  (fn [message & args]
+    (apply -log! (concat [:error message] args))))

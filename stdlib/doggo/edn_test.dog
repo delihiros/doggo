@@ -1,0 +1,200 @@
+; =====================
+; doggo.edn tests
+; =====================
+(ns doggo.edn-test
+  (:require [doggo.edn :as edn]
+    [doggo.io :as io]
+    [doggo.os :as os]
+    [doggo.time :as time]
+    [doggo.test :as t]))
+
+(def edn-reader-path
+  (io/join-path (os/system-temp-dir) (str "doggo-edn-read-" (nano-time) ".edn")))
+
+(t/deftest edn-read-and-write-roundtrip
+  (let [value {:name "Doggo" :tags [:lisp :go] :meta {:stable true}}
+      encoded (edn/write-string value)]
+    (t/is (= value (edn/read-string encoded)))
+    (t/is (= {:answer 42} (edn/read-string "{:answer 42}")))
+    (t/is (= [1 2 3] (edn/read-string "[1 2 3]")))
+    (t/is (= 2 (edn/read-string "#_ 1 2")))
+    (t/is (= [1 3] (edn/read-string "[1 #_ 2 3]")))
+    (io/spit edn-reader-path "{:from :reader}")
+    (t/is (= {:from :reader}
+        (edn/read (io/reader-spec edn-reader-path))))))
+
+(t/deftest edn-read-all-and-write-targets
+  (let [forms-path (io/join-path (os/system-temp-dir) (str "doggo-edn-forms-" (nano-time) ".edn"))
+      blank-path (io/join-path (os/system-temp-dir) (str "doggo-edn-blank-" (nano-time) ".edn"))
+      writer-path (io/join-path (os/system-temp-dir) (str "doggo-edn-writer-" (nano-time) ".edn"))
+      stream-path (io/join-path (os/system-temp-dir) (str "doggo-edn-stream-" (nano-time) ".edn"))]
+    (io/spit forms-path "1 :two {:three 3}")
+    (io/spit blank-path "   ")
+    (t/is (= [1 :two {:three 3}]
+        (edn/read-string-all "1 :two {:three 3}")))
+    (t/is (= [1 :two {:three 3}]
+        (edn/read-all (io/reader-spec forms-path))))
+    (t/is (= [] (edn/read-string-all "   ")))
+    (t/is (= [] (edn/read-all (io/reader-spec blank-path))))
+    (t/is (= nil (edn/write {:a 1} forms-path)))
+    (t/is (= "{:a 1}" (io/slurp forms-path)))
+    (t/is (= nil (edn/write {:b [2 3]} (io/writer-spec writer-path))))
+    (t/is (= "{:b [2 3]}" (io/slurp writer-path)))
+    (t/is (= nil (edn/write {:c #{4 5}} (io/output-stream-spec stream-path))))
+    (t/is (= "{:c #{4 5}}" (io/slurp stream-path)))))
+
+(t/deftest edn-read-supports-eof-on-blank-input
+  (io/spit edn-reader-path "   ")
+  (t/is (= nil (edn/read-string "")))
+  (t/is (= nil (edn/read-string " \n\t ")))
+  (t/is (= :done (edn/read-string "" {:eof :done})))
+  (t/is (= :done (edn/read-string " \n\t " {:eof :done})))
+  (t/is (= nil (edn/read (io/reader-spec edn-reader-path))))
+  (t/is (= :done (edn/read (io/reader-spec edn-reader-path) {:eof :done}))))
+
+(t/deftest edn-read-supports-tagged-literal-readers
+  (io/spit edn-reader-path "#app/user {:id 7}")
+  (t/is (= {:tag "app/user" :value {:id 1}}
+      (edn/read-string "#app/user {:id 1}"
+        {:readers {'app/user (fn [value]
+              {:tag "app/user"
+                :value value})}})))
+  (t/is (= [{:kind :date :value "2024-01-02"} 3]
+      (edn/read-string "[#app/date \"2024-01-02\" 3]"
+        {:readers {"app/date" (fn [value]
+              {:kind :date
+                :value value})}})))
+  (t/is (= 7
+      (edn/read (io/reader-spec edn-reader-path)
+        {:readers {'app/user (fn [value] (:id value))}}))))
+
+(t/deftest edn-read-supports-default-tagged-literal-reader
+  (t/is (= {:tag "app/missing" :value 42}
+      (edn/read-string "#app/missing 42"
+        {:default (fn [tag value]
+            {:tag (str tag)
+              :value value})})))
+  (t/is (= {:outer {:tag "app/inner" :value {:a 1}}}
+      (edn/read-string "{:outer #app/inner {:a 1}}"
+        {:default (fn [tag value]
+            {:tag (str tag)
+              :value value})}))))
+
+(t/deftest edn-read-location-diagnostics-include-tagged-literal-context
+  (let [missing (try
+        (edn/read-string "#app/missing {:id 7}" {:location? true})
+        nil
+        (catch [e]
+          (ex-data e)))
+      thrown (try
+        (edn/read-string "#app/fail 1"
+          {:location? true
+            :readers {'app/fail (fn [value]
+                (throw (ex-info "reader boom"
+                    {:kind :reader-failure})))}})
+        nil
+        (catch [e]
+          (ex-data e)))]
+    (t/is (= "read" (:phase missing)))
+    (t/is (= 'app/missing (:tag (:context missing))))
+    (t/is (= {:id 7} (:value (:context missing))))
+    (t/is (= 'app/fail (:tag (:context thrown))))
+    (t/is (= 1 (:value (:context thrown))))))
+
+(t/deftest edn-read-and-write-support-symbolic-values
+  (t/is (= "##NaN"
+      (edn/write-string (edn/read-string "##NaN"))))
+  (t/is (= "##Inf"
+      (edn/write-string (edn/read-string "##Inf"))))
+  (t/is (= "##-Inf"
+      (edn/write-string (edn/read-string "##-Inf"))))
+  (t/is (= "[##NaN ##Inf ##-Inf]"
+      (edn/write-string (edn/read-string "[##NaN ##Inf ##-Inf]"))))
+  (t/is (= ":answer"
+      (edn/write-string :answer))))
+
+(t/deftest edn-read-supports-built-in-inst-and-uuid-readers
+  (let [instant (edn/read-string "#inst \"2024-01-02T12:04:05+09:00\"")
+      partial (edn/read-string "#inst \"2024-01\"")
+      precise (edn/read-string "#inst \"2024-01-02T03:04:05.123456789Z\"")
+      uuid (edn/read-string "#uuid \"550E8400-E29B-41D4-A716-446655440000\"")]
+    (t/is (= "2024-01-02T03:04:05Z" (time/format instant)))
+    (t/is (= 0 (time/offset-seconds instant)))
+    (t/is (= "#inst \"2024-01-02T03:04:05.000-00:00\""
+        (edn/write-string instant)))
+    (t/is (= "2024-01-01T00:00:00Z" (time/format partial)))
+    (t/is (= "2024-01-02T03:04:05.123Z" (time/format precise)))
+    (t/is (= precise
+        (edn/read-string (edn/write-string precise))))
+    (t/is (= "#uuid \"550e8400-e29b-41d4-a716-446655440000\""
+        (edn/write-string uuid)))
+    (t/is (= uuid
+        (edn/read-string "#uuid \"550e8400-e29b-41d4-a716-446655440000\"")))
+    (t/is (= {:kind :custom :value "2024-01-02T03:04:05Z"}
+        (edn/read-string "#inst \"2024-01-02T03:04:05Z\""
+          {:readers {'inst (fn [value]
+                {:kind :custom
+                  :value value})}})))))
+
+(t/deftest edn-read-and-write-roundtrip-extended-string-escapes
+  (doseq [value ["a\b" "a\f" "A" "☃" "𝄞" "A\u001fZ"]]
+    (t/is (= value
+        (edn/read-string (edn/write-string value))))))
+
+(t/deftest edn-read-rejects-lone-surrogate-escapes
+  (t/is (t/thrown? (edn/read-string "\"\\udead\"")))
+  (t/is (t/thrown? (edn/read-string "\"\\ud834x\"")))
+  (t/is (t/thrown? (edn/read-string "\"\\ud834\\u0041\""))))
+
+(t/deftest edn-write-string-keeps-plain-instant-shaped-maps-as-maps
+  (t/is (= "{:instant \"2024-01-02T03:04:05Z\", :epoch-millis 1704164645000, :offset-seconds 0}"
+      (edn/write-string {:instant "2024-01-02T03:04:05Z"
+          :epoch-millis 1704164645000
+          :offset-seconds 0}))))
+
+(t/deftest edn-read-rejects-invalid-option-shapes
+  (t/is (t/thrown-with-msg?
+      #"doggo.edn/read-string: expected option map"
+      (edn/read-string "1" :bad)))
+  (t/is (t/thrown-with-msg?
+      #"unsupported option :bad"
+      (edn/read-string "1" {:bad true})))
+  (t/is (t/thrown-with-msg?
+      #"option :readers must be map"
+      (edn/read-string "#app/x 1" {:readers []})))
+  (t/is (t/thrown-with-msg?
+      #"option :default must be function"
+      (edn/read-string "#app/x 1" {:default 1})))
+  (t/is (t/thrown-with-msg?
+      #"unknown symbolic value: ##foo"
+      (edn/read-string "##foo")))
+  (t/is (t/thrown-with-msg?
+      #"#uuid data reader expected string"
+      (edn/read-string "#uuid 1")))
+  (t/is (t/thrown-with-msg?
+      #"invalid UUID string: BAD"
+      (edn/read-string "#uuid \"BAD\"")))
+  (t/is (t/thrown-with-msg?
+      #"#inst data reader expected string"
+      (edn/read-string "#inst 1")))
+  (t/is (t/thrown-with-msg?
+      #"parse-timestamp: invalid timestamp"
+      (edn/read-string "#inst \"bad\"")))
+  (t/is (t/thrown-with-msg?
+      #"no reader function for tag app/x"
+      (edn/read-string "#app/x 1")))
+  (t/is (t/thrown-with-msg?
+      #"doggo.edn/read: expected option map"
+      (edn/read "{:a 1}" :bad)))
+  (t/is (t/thrown-with-msg?
+      #"doggo.edn/read-string-all: unsupported option :eof"
+      (edn/read-string-all "1" {:eof :done})))
+  (let [data (try
+        (edn/read-all :bad)
+        nil
+        (catch [e] (ex-data e)))]
+    (t/is (= :invalid-argument (:kind data)))
+    (t/is (= 'doggo.edn/read-all (:function data))))
+  (t/is (t/thrown-with-msg?
+      #"doggo.edn/write: doggo.io/spit:"
+      (edn/write {:a 1} :bad))))

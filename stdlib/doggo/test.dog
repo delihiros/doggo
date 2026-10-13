@@ -1,0 +1,430 @@
+; =====================
+; Doggo Test Framework
+; =====================
+(ns doggo.test
+  (:require [doggo.core :refer :all]
+    [doggo.schema]))
+
+(def *tests* (atom {}))
+(def ^:private -test-metadata* (atom {}))
+(def *testing-contexts* (atom []))
+(def *once-fixtures* (atom {}))
+(def *each-fixtures* (atom {}))
+(def *report-hook* (atom (fn [_] nil)))
+
+(def ^:private -test-ns
+  (fn [test-key]
+    (nth test-key 0)))
+
+(def ^:private -test-name
+  (fn [test-key]
+    (nth test-key 1)))
+
+(def ^:private -test-kind
+  (fn [test-key]
+    (let [metadata (get @-test-metadata* test-key)]
+      (if (map? metadata)
+        (get metadata :kind :test)
+        :test))))
+
+(def ^:private -with-test-kind
+  (fn [case test-key]
+    (assoc case :kind (-test-kind test-key))))
+
+(def ^:private -sort-test-entries
+  (fn [entries]
+    (sort-by (fn [entry]
+        (str (-test-ns (key entry)) "/" (-test-name (key entry))))
+      entries)))
+
+(def ^:private -tests-for-namespace
+  (fn [target-ns]
+    (-sort-test-entries
+      (filter (fn [entry]
+          (= (-test-ns (key entry)) target-ns))
+        (seq @*tests*)))))
+
+(def ^:private -registered-test-namespaces
+  (fn []
+    (sort
+      (distinct
+        (map (fn [entry]
+            (-test-ns (key entry)))
+          (seq @*tests*))))))
+
+(def ^:private -compose-fixtures
+  (fn [fixtures f]
+    (reduce (fn [acc fixture]
+        (fn []
+          (fixture acc)))
+      f
+      (reverse fixtures))))
+
+(def set-report-hook!
+  (fn [hook]
+    (reset! *report-hook* hook)
+    hook))
+
+(def clear-report-hook!
+  (fn []
+    (reset! *report-hook* (fn [_] nil))
+    nil))
+
+(def ^:private -caught-payload
+  (fn [value]
+    (ex-data value)))
+
+(def ^:private -report-case
+  (fn [case]
+    (let [hook @*report-hook*]
+      (hook case))
+    case))
+
+(def use-fixtures
+  (fn [scope & fns]
+    (cond
+      (= scope :once)
+      (swap! *once-fixtures*
+        (fn [m]
+          (assoc m *ns* (vec (concat (or (get m *ns*) []) fns)))))
+
+      (= scope :each)
+      (swap! *each-fixtures*
+        (fn [m]
+          (assoc m *ns* (vec (concat (or (get m *ns*) []) fns)))))
+
+      :else
+      (throw (ex-info "use-fixtures expects :once or :each"
+          {:kind :invalid-argument
+            :function 'doggo.test/use-fixtures
+            :argument :scope
+            :expected #{:once :each}
+            :actual scope})))
+    nil))
+
+(defmacro deftest [name & body]
+  `(do
+    (def ~name (fn [] ~@body))
+    (swap! doggo.test/*tests* assoc [*ns* (quote ~name)] ~name)
+    (swap! doggo.test/-test-metadata* assoc [*ns* (quote ~name)] {:kind :test})
+    ~name))
+
+(def is-equality-form?
+  (fn [form]
+    (and (list? form)
+      (= (count form) 3)
+      (= (first form) '=))))
+
+(def ^:private -canonical-check-report? doggo.schema/check-report?)
+
+(defmacro is [form & args]
+  (let [msg (first args)]
+    (if (is-equality-form? form)
+      (let [expected-form (first (rest form))
+          actual-form (first (rest (rest form)))]
+        `(let [expected# ~expected-form
+            actual# ~actual-form
+            result# (= expected# actual#)
+            msg# ~msg
+            form-quoted# (quote ~form)]
+          (if result#
+            true
+            (throw (ex-info "test assertion failed"
+                {:kind :test-failure
+                  :form form-quoted#
+                  :message msg#
+                  :contexts @doggo.test/*testing-contexts*
+                  :expected expected#
+                  :actual actual#})))))
+      `(let [result# ~form
+          msg# ~msg
+          form-quoted# (quote ~form)]
+        (if result#
+          true
+          (throw (ex-info "test assertion failed"
+              {:kind :test-failure
+                :form form-quoted#
+                :message msg#
+                :contexts @doggo.test/*testing-contexts*})))))))
+
+(defmacro is-check-pass [report & args]
+  (let [msg (first args)]
+    `(let [report# ~report
+        msg# ~msg
+        form-quoted# (quote (is-check-pass ~report ~@args))]
+      (if (doggo.test/-canonical-check-report? report#)
+        (if (:pass? report#)
+          true
+          (throw (ex-info "test assertion failed"
+              {:kind :test-failure
+                :form form-quoted#
+                :message msg#
+                :contexts @doggo.test/*testing-contexts*
+                :expected {:pass? true}
+                :actual report#})))
+        (throw (ex-info "is-check-pass expects a canonical check report"
+            {:kind :invalid-argument
+              :function 'doggo.test/is-check-pass
+              :argument :report
+              :actual report#}))))))
+
+(defmacro defproperty [name bindings-or-opts & tail]
+  (let [has-opts (map? bindings-or-opts)
+      opts (if has-opts bindings-or-opts nil)
+      bindings (if has-opts (first tail) bindings-or-opts)
+      body (if has-opts (rest tail) tail)]
+    (if has-opts
+      `(do
+        (doggo.test/deftest ~name
+          (doggo.test/is-check-pass
+            (doggo.schema/for-all ~opts ~bindings ~@body)))
+        (swap! doggo.test/-test-metadata* assoc [*ns* (quote ~name)] {:kind :property})
+        ~name)
+      `(do
+        (doggo.test/deftest ~name
+          (doggo.test/is-check-pass
+            (doggo.schema/for-all ~bindings ~@body)))
+        (swap! doggo.test/-test-metadata* assoc [*ns* (quote ~name)] {:kind :property})
+        ~name))))
+
+(def ^:private -are-groups
+  (fn [width items]
+    (if (empty? items)
+      []
+      (cons (vec (take width items))
+        (-are-groups width (drop width items))))))
+
+(defmacro are [argv expr & args]
+  (let [bindings (vec argv)
+      width (count bindings)]
+    (if (<= width 0)
+      (throw (ex-info "are requires at least one binding"
+          {:kind :invalid-argument
+            :function 'doggo.test/are
+            :argument :bindings}))
+      (if (not (= 0 (mod (count args) width)))
+        (throw (ex-info "are received an uneven number of arguments"
+            {:kind :invalid-argument
+              :function 'doggo.test/are
+              :argument :forms}))
+        `(do
+          ~@(map (fn [values]
+              `(let [~@(interleave bindings values)]
+                (is ~expr)))
+            (-are-groups width args)))))))
+
+(defmacro thrown? [& body]
+  `(try
+    ~@body
+    false
+    (catch [_#] true)))
+
+(defmacro thrown-with-msg? [message & body]
+  `(let [matcher# ~message
+      exception# (try
+        ~@body
+        nil
+        (catch [e#] e#))
+      text# (if (some? (ex->map exception#))
+        (ex-message exception#)
+        nil)]
+    (if (nil? text#)
+      false
+      (cond
+        (regex? matcher#) (some? (re-find matcher# text#))
+        (string? matcher#) (= matcher# text#)
+        :else false))))
+
+(defmacro testing [context & body]
+  `(do
+    (swap! doggo.test/*testing-contexts* (fn [ctxs#] (conj ctxs# ~context)))
+    (try
+      (do ~@body)
+      (finally
+        (swap! doggo.test/*testing-contexts* (fn [ctxs#] (vec (butlast ctxs#))))))))
+
+(def run-single-test
+  (fn [test-key test-fn]
+    (let [test-ns (-test-ns test-key)
+        test-name (-test-name test-key)
+        started# (nano-time)
+        each-fixtures (or (get @*each-fixtures* test-ns) [])
+        wrapped-test (-compose-fixtures each-fixtures test-fn)]
+      (reset! *testing-contexts* [])
+      (let [case (try
+            (do
+              (wrapped-test)
+              {:ns test-ns
+                :name test-name
+                :status :pass
+                :duration-ms (/ (- (nano-time) started#) 1000000.0)
+                :form nil
+                :message nil
+                :contexts []
+                :expected nil
+                :actual nil
+                :error nil})
+            (catch [e]
+              (let [payload (-caught-payload e)]
+                (if (and (map? payload) (= (:kind payload) :test-failure))
+                  {:ns test-ns
+                    :name test-name
+                    :status :fail
+                    :duration-ms (/ (- (nano-time) started#) 1000000.0)
+                    :form (:form payload)
+                    :message (:message payload)
+                    :contexts (or (:contexts payload) [])
+                    :expected (:expected payload)
+                    :actual (:actual payload)
+                    :error nil}
+                  {:ns test-ns
+                    :name test-name
+                    :status :error
+                    :duration-ms (/ (- (nano-time) started#) 1000000.0)
+                    :form nil
+                    :message nil
+                    :contexts []
+                    :expected nil
+                    :actual nil
+                    :error (pr-str e)}))))]
+        (reset! *testing-contexts* [])
+        (-report-case (-with-test-kind case test-key))))))
+
+(def summarize-cases
+  (fn [cases]
+    (reduce (fn [acc case]
+        (let [status (:status case)
+            with-base {:test (+ (:test acc) 1)
+              :pass (:pass acc)
+              :fail (:fail acc)
+              :error (:error acc)
+              :property (if (= (:kind case) :property)
+                (+ (:property acc) 1)
+                (:property acc))
+              :duration-ms (+ (:duration-ms acc) (get case :duration-ms 0))}]
+          (cond
+            (= status :pass)
+            (assoc with-base :pass (+ (:pass with-base) 1))
+
+            (= status :fail)
+            (assoc with-base :fail (+ (:fail with-base) 1))
+
+            (= status :error)
+            (assoc with-base :error (+ (:error with-base) 1))
+
+            :else with-base)))
+      {:test 0 :pass 0 :fail 0 :error 0 :property 0 :duration-ms 0}
+      cases)))
+
+(def ^:private -run-test-entries
+  (fn [test-ns entries]
+    (let [once-fixtures (or (get @*once-fixtures* test-ns) [])
+        run-body (fn []
+          (reduce (fn [acc entry]
+              (conj acc (run-single-test (key entry) (val entry))))
+            []
+            entries))]
+      ((-compose-fixtures once-fixtures run-body)))))
+
+(def ^:private -normalize-test-target
+  (fn [v]
+    (cond
+      (symbol? v) [*ns* v]
+      (and (vector? v)
+        (= 2 (count v))
+        (symbol? (nth v 0))
+        (symbol? (nth v 1)))
+      v
+      :else
+      (throw (ex-info "test-vars expects symbols or [ns name] vectors"
+          {:kind :invalid-argument
+            :function 'doggo.test/test-vars
+            :argument :vars
+            :actual v})))))
+
+(def ^:private -target->label
+  (fn [target]
+    (str (-test-ns target) "/" (-test-name target))))
+
+(def ^:private -join-labels
+  (fn [labels]
+    (loop [remaining labels out "" first? true]
+      (if (empty? remaining)
+        out
+        (let [label (first remaining)]
+          (recur (rest remaining)
+            (if first?
+              label
+              (str out ", " label))
+            false))))))
+
+(def ^:private -ensure-known-test-targets
+  (fn [targets]
+    (let [missing (reduce (fn [acc test-ns]
+            (let [requested (distinct
+                  (map -test-name
+                    (filter (fn [target]
+                        (= (-test-ns target) test-ns))
+                      targets)))
+                existing (into #{}
+                  (map (fn [entry]
+                      (-test-name (key entry)))
+                    (-tests-for-namespace test-ns)))]
+              (into acc
+                (map (fn [test-name] [test-ns test-name])
+                  (filter (fn [test-name]
+                      (not (contains? existing test-name)))
+                    requested)))))
+          []
+          (sort (distinct (map -test-ns targets))))]
+      (if (empty? missing)
+        nil
+        (throw (ex-info
+            (str "Unknown tests: "
+              (-join-labels (map -target->label missing)))
+            {:kind :invalid-argument
+              :function 'doggo.test/test-vars
+              :argument :vars
+              :actual missing}))))))
+
+(def test-vars
+  (fn [vars]
+    (let [targets (map -normalize-test-target vars)
+        grouped (group-by -test-ns targets)
+        _ (-ensure-known-test-targets targets)
+        namespaces (sort (keys grouped))
+        cases (reduce (fn [acc test-ns]
+            (let [wanted (into #{} (map -test-name (get grouped test-ns)))
+                entries (filter (fn [entry]
+                    (contains? wanted (-test-name (key entry))))
+                  (-tests-for-namespace test-ns))]
+              (into acc (-run-test-entries test-ns entries))))
+          []
+          namespaces)
+        summary (summarize-cases cases)]
+      {:summary summary
+        :cases cases})))
+
+(def run-tests
+  (fn [& namespaces]
+    (let [target-ns (if (empty? namespaces)
+          (list *ns*)
+          (sort (distinct namespaces)))
+        cases (reduce (fn [acc test-ns]
+            (into acc (-run-test-entries test-ns (-tests-for-namespace test-ns))))
+          []
+          target-ns)
+        summary (summarize-cases cases)]
+      {:summary summary
+        :cases cases})))
+
+(def run-all-tests
+  (fn []
+    (let [namespaces (-registered-test-namespaces)
+        cases (reduce (fn [acc test-ns]
+            (into acc (-run-test-entries test-ns (-tests-for-namespace test-ns))))
+          []
+          namespaces)
+        summary (summarize-cases cases)]
+      {:summary summary
+        :cases cases})))

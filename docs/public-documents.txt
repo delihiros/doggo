@@ -1,0 +1,12 @@
+README.md
+docs/getting-started.md
+docs/language-guide.md
+docs/standard-library.md
+docs/stdlib/core-and-data.md
+docs/stdlib/formats-and-values.md
+docs/stdlib/io-and-system.md
+docs/stdlib/application-and-tools.md
+docs/tooling.md
+docs/go-interop.md
+docs/ebitengine-tutorial.md
+docs/how-doggo-works.md

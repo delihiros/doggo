@@ -1,0 +1,113 @@
+; =====================
+; doggo.json tests
+; =====================
+(ns doggo.json-test
+  (:require [doggo.io :as io]
+    [doggo.json :as json]
+    [doggo.os :as os]
+    [doggo.test :as t]))
+
+(def json-read-path
+  (io/join-path (os/system-temp-dir) (str "doggo-json-read-" (nano-time) ".json")))
+
+(def json-write-path
+  (io/join-path (os/system-temp-dir) (str "doggo-json-write-" (nano-time) ".json")))
+
+(def json-writer-path
+  (io/join-path (os/system-temp-dir) (str "doggo-json-writer-" (nano-time) ".json")))
+
+(def json-stream-path
+  (io/join-path (os/system-temp-dir) (str "doggo-json-stream-" (nano-time) ".json")))
+
+(t/deftest read-string-defaults-to-string-keys
+  (t/is (= {"a" 1 "b" [true nil "x"]}
+      (json/read-string "{\"a\":1,\"b\":[true,null,\"x\"]}"))))
+
+(t/deftest read-string-supports-keyword-keys
+  (t/is (= {:a 1 :b {:c 2}}
+      (json/read-string "{\"a\":1,\"b\":{\"c\":2}}" {:key-fn :keyword}))))
+
+(t/deftest read-string-supports-number-mode-string
+  (t/is (= {"n" "9007199254740993"}
+      (json/read-string "{\"n\":9007199254740993}" {:number-mode :string}))))
+
+(t/deftest preserves-large-integers-within-int64
+  (t/is (= {"n" 9007199254740993}
+      (json/read-string "{\"n\":9007199254740993}")))
+  (t/is (= "{\"n\":9007199254740993}"
+      (json/write-string {"n" 9007199254740993}))))
+
+(t/deftest write-string-serializes-named-values
+  (t/is (= "{\"a\":1,\"status\":\"ok\"}"
+      (json/write-string {:a 1 :status :ok}))))
+
+(t/deftest write-string-supports-pretty-output
+  (t/is (= "{\n  \"a\": 1\n}"
+      (json/write-string {:a 1} {:pretty true}))))
+
+(t/deftest write-string-supports-pretty-option-maps
+  (t/is (= "{\n    \"a\": 1\n}"
+      (json/write-string {:a 1} {:pretty {:indent "    "}})))
+  (t/is (= "{\n>>--\"a\": 1\n>>}"
+      (json/write-string {:a 1} {:pretty {:prefix ">>" :indent "--"}}))))
+
+(t/deftest json-read-supports-reader-and-input-stream-sources
+  (io/spit json-read-path "{\"a\":1,\"b\":{\"c\":2}}")
+  (t/is (= {:a 1 :b {:c 2}}
+      (json/read json-read-path {:key-fn :keyword})))
+  (t/is (= {:a 1 :b {:c 2}}
+      (json/read (io/reader-spec json-read-path) {:key-fn :keyword})))
+  (t/is (= {"a" 1 "b" {"c" 2}}
+      (json/read (io/input-stream-spec json-read-path)))))
+
+(t/deftest json-write-supports-path-and-io-targets
+  (json/write {:a 1 :status :ok} json-write-path)
+  (json/write {:a 1} (io/writer-spec json-writer-path) {:pretty true})
+  (json/write {:a 1} (io/output-stream-spec json-stream-path) {:pretty true})
+  (t/is (= "{\"a\":1,\"status\":\"ok\"}"
+      (io/slurp json-write-path)))
+  (t/is (= "{\n  \"a\": 1\n}"
+      (io/slurp json-writer-path)))
+  (t/is (= "{\n  \"a\": 1\n}"
+      (io/slurp json-stream-path))))
+
+(t/deftest json-rejects-invalid-inputs
+  (t/is (t/thrown-with-msg?
+      #"json/read-string"
+      (json/read-string "{")))
+  (t/is (t/thrown-with-msg?
+      #"out of int64 range"
+      (json/read-string "{\"n\":9223372036854775808}")))
+  (t/is (t/thrown-with-msg?
+      #"key-fn"
+      (json/read-string "{}" {:key-fn :bad})))
+  (t/is (t/thrown-with-msg?
+      #"JSON object keys must be strings, symbols, or keywords"
+      (json/write-string {[1 2] 3})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.json/read: doggo.io/slurp:"
+      (json/read :bad)))
+  (t/is (t/thrown-with-msg?
+      #"doggo.json/read: doggo.io/slurp:"
+      (json/read (io/writer-spec json-read-path))))
+  (t/is (t/thrown-with-msg?
+      #"doggo.json/write: doggo.io/spit:"
+      (json/write {:a 1} :bad)))
+  (t/is (t/thrown-with-msg?
+      #"doggo.json/write: doggo.io/spit:"
+      (json/write {:a 1} (io/reader-spec json-write-path))))
+  (t/is (t/thrown-with-msg?
+      #"doggo.json/write does not support append targets"
+      (json/write {:a 1} (io/writer-spec json-write-path {:append true}))))
+  (t/is (t/thrown-with-msg?
+      #"doggo.json/write does not support append targets"
+      (json/write {:a 1} (io/output-stream-spec json-write-path {:append true}))))
+  (t/is (t/thrown-with-msg?
+      #"indent"
+      (json/write-string {:a 1} {:pretty {:indent 2}})))
+  (t/is (t/thrown-with-msg?
+      #"prefix"
+      (json/write-string {:a 1} {:pretty {:prefix 1}})))
+  (t/is (t/thrown-with-msg?
+      #"does not support :width"
+      (json/write-string {:a 1} {:pretty {:width "  "}}))))

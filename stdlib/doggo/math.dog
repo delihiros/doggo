@@ -1,0 +1,143 @@
+; =====================
+; Doggo Math Library
+; =====================
+(ns doggo.math)
+
+(def PI 3.141592653589793)
+(def E 2.718281828459045)
+
+(def abs
+  (fn [x]
+    (math-abs* x)))
+
+(def sqrt
+  (fn [x]
+    (math-sqrt* x)))
+
+(def pow
+  (fn [x y]
+    (math-pow* x y)))
+
+(def exp
+  (fn [x]
+    (math-exp* x)))
+
+(def expm1
+  (fn [x]
+    (math-expm1* x)))
+
+(def log
+  (fn [x]
+    (math-log* x)))
+
+(def log10
+  (fn [x]
+    (math-log10* x)))
+
+(def log1p
+  (fn [x]
+    (math-log1p* x)))
+
+(def cbrt
+  (fn [x]
+    (math-cbrt* x)))
+
+(def sin
+  (fn [x]
+    (math-sin* x)))
+
+(def sinh
+  (fn [x]
+    (math-sinh* x)))
+
+(def cos
+  (fn [x]
+    (math-cos* x)))
+
+(def cosh
+  (fn [x]
+    (math-cosh* x)))
+
+(def tan
+  (fn [x]
+    (math-tan* x)))
+
+(def tanh
+  (fn [x]
+    (math-tanh* x)))
+
+(def asin
+  (fn [x]
+    (math-asin* x)))
+
+(def acos
+  (fn [x]
+    (math-acos* x)))
+
+(def atan
+  (fn [x]
+    (math-atan* x)))
+
+(def atan2
+  (fn [y x]
+    (math-atan2* y x)))
+
+(def hypot
+  (fn [x y]
+    (math-hypot* x y)))
+
+(def copy-sign
+  (fn [magnitude sign]
+    (math-copy-sign* magnitude sign)))
+
+(def next-after
+  (fn [start direction]
+    (math-next-after* start direction)))
+
+(def floor
+  (fn [x]
+    (math-floor* x)))
+
+(def ceil
+  (fn [x]
+    (math-ceil* x)))
+
+(def rint
+  (fn [x]
+    (math-rint* x)))
+
+(def next-up
+  (fn [x]
+    (math-next-up* x)))
+
+(def next-down
+  (fn [x]
+    (math-next-down* x)))
+
+(def ulp
+  (fn [x]
+    (math-ulp* x)))
+
+(def get-exponent
+  (fn [x]
+    (math-get-exponent* x)))
+
+(def scalb
+  (fn [x scale-factor]
+    (math-scalb* x scale-factor)))
+
+(def round
+  (fn [x]
+    (math-round* x)))
+
+(def signum
+  (fn [x]
+    (math-signum* x)))
+
+(def to-degrees
+  (fn [x]
+    (math-to-degrees* x)))
+
+(def to-radians
+  (fn [x]
+    (math-to-radians* x)))

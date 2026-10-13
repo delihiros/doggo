@@ -1,0 +1,8 @@
+(ns doggo.core-test
+  (:require [doggo.test :as t]))
+
+(t/deftest public-lazy-sequence-functions-retain-behavior
+  (t/is (= [1 1 1] (vec (take 3 (repeat 1)))))
+  (t/is (= [0 1 2] (vec (take 3 (iterate inc 0)))))
+  (t/is (= [1 2 1 2] (vec (take 4 (cycle [1 2])))))
+  (t/is (= [1 2 3 4] (vec (mapcat identity [[1 2] [3 4]])))))

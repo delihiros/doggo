@@ -1,0 +1,8 @@
+(ns doggo.http)
+
+(def ^:private -request http-request*)
+
+(def request
+  (fn
+    ([url] (-request url {}))
+    ([url options] (-request url options))))

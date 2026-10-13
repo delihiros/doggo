@@ -1,0 +1,46 @@
+; STM (Software Transactional Memory) の例
+; Clojureの例に基づいた並行スワップテスト
+
+; 複数のベクターRefを作成し、並行してスワップする
+; STMにより、値の損失や重複がないことを保証する
+
+(defn create-vec-refs [nvecs nitems]
+  "nvecs個のRefを作成し、各Refには連続した数値のベクターを格納"
+  (vec (map (fn [i]
+        (ref (vec (range (* i nitems) (* (inc i) nitems)))))
+      (range nvecs))))
+
+(defn count-distinct [vec-refs]
+  "すべてのRefの値を結合し、重複を除いた数を数える"
+  (count (distinct (apply concat (map deref vec-refs)))))
+
+(defn swap-random [vec-refs nvecs nitems]
+  "2つのランダムなベクター間で2つのランダムな位置の値をスワップ"
+  (let [v1 (rand-int nvecs)
+      v2 (rand-int nvecs)
+      i1 (rand-int nitems)
+      i2 (rand-int nitems)]
+    (dosync
+      (let [temp (nth @(nth vec-refs v1) i1)]
+        (alter (nth vec-refs v1) assoc i1 (nth @(nth vec-refs v2) i2))
+        (alter (nth vec-refs v2) assoc i2 temp)))))
+
+(defn run [nvecs nitems nthreads niters]
+  "メインの実行関数"
+  (let [vec-refs (create-vec-refs nvecs nitems)]
+    (println "Initial state:")
+    (println "Distinct count:" (count-distinct vec-refs))
+
+    ; 並行スワップを実行
+    ; pmap を使って nthreads 個のワーカーを起動し、各ワーカーが niters 回スワップする
+    (dorun
+      (pmap (fn [_]
+          (dotimes [_ niters]
+            (swap-random vec-refs nvecs nitems)))
+        (range nthreads)))
+
+    (println "After" (* nthreads niters) "swaps:")
+    (println "Distinct count:" (count-distinct vec-refs))))
+
+; 小規模なテストを実行
+(run 10 10 4 100)

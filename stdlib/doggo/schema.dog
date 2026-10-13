@@ -1,0 +1,103 @@
+; =====================
+; doggo.schema helpers
+; =====================
+(ns doggo.schema)
+
+(def ^:private -valid? valid?)
+(def ^:private -explain explain)
+(def ^:private -generate generate)
+(def ^:private -sample sample)
+(def ^:private -shrink shrink)
+(def ^:private -shrink-seq shrink-seq)
+(def ^:private -instrument instrument)
+(def ^:private -unstrument unstrument)
+(def ^:private -check check)
+
+(def valid? -valid?)
+(def explain -explain)
+(def generate -generate)
+(def sample -sample)
+(def shrink -shrink)
+(def shrink-seq -shrink-seq)
+(def instrument -instrument)
+(def unstrument -unstrument)
+(def check -check)
+
+(def ^:private -check-report?
+  (fn [report]
+    (and (map? report)
+      (= 8 (count report))
+      (contains? report :pass?)
+      (contains? report :iterations)
+      (contains? report :seed)
+      (contains? report :failing-input)
+      (contains? report :shrunk-input)
+      (contains? report :shrink-steps)
+      (contains? report :failure)
+      (contains? report :explain)
+      (or (= (:pass? report) true)
+        (= (:pass? report) false)))))
+
+(def check-report? -check-report?)
+
+(def check-pass?
+  (fn [report]
+    (if (check-report? report)
+      (:pass? report)
+      false)))
+
+(def ^:private -for-all-parse-bindings
+  (fn [bindings]
+    (if (not (vector? bindings))
+      (throw (ex-info "for-all requires a binding vector"
+          {:kind :invalid-argument
+            :function 'doggo.schema/for-all
+            :argument :bindings
+            :actual bindings}))
+      (loop [remaining bindings
+          names []
+          schemas []]
+        (if (empty? remaining)
+          {:names names
+            :schemas schemas}
+          (if (empty? (rest remaining))
+            (throw (ex-info "for-all binding vector must contain an even number of forms"
+                {:kind :invalid-argument
+                  :function 'doggo.schema/for-all
+                  :argument :bindings
+                  :actual bindings}))
+            (if (not (symbol? (first remaining)))
+              (throw (ex-info "for-all binding names must be symbols"
+                  {:kind :invalid-argument
+                    :function 'doggo.schema/for-all
+                    :argument :bindings
+                    :actual bindings}))
+              (recur (rest (rest remaining))
+                (conj names (first remaining))
+                (conj schemas (first (rest remaining)))))))))))
+
+(defmacro for-all [bindings-or-opts & tail]
+  (let [has-opts (map? bindings-or-opts)
+      opts (if has-opts bindings-or-opts nil)
+      bindings (if has-opts
+        (first tail)
+        bindings-or-opts)
+      body (if has-opts
+        (rest tail)
+        tail)
+      parsed (-for-all-parse-bindings bindings)
+      names (:names parsed)
+      schemas (:schemas parsed)
+      schema (if (empty? schemas)
+        [:tuple]
+        (if (= 1 (count schemas))
+          (first schemas)
+          (vec (cons :tuple schemas))))
+      body-fn `(fn [~@names]
+        (do ~@body))]
+    (if has-opts
+      `(check ~body-fn ~schema ~opts)
+      `(check ~body-fn ~schema))))
+
+(defmacro defschema [name schema]
+  `(def ~name ~schema))

@@ -1,0 +1,126 @@
+; =====================
+; doggo.schema tests
+; =====================
+(ns doggo.schema-test
+  (:require [doggo.schema :as schema]
+    [doggo.string :as str]
+    [doggo.test :as t]))
+
+(t/deftest valid-works-with-direct-schema-values
+  (t/is (true? (schema/valid? [:vector :int] [1 2 3])))
+  (t/is (false? (schema/valid? [:vector :int] [1 "x" 3]))))
+
+(t/deftest explain-returns-structured-data
+  (let [result (schema/explain [:map [:name :string]] {:name 42})]
+    (t/is (map? result))
+    (t/is (contains? result :valid?))
+    (t/is (contains? result :schema))
+    (t/is (contains? result :value))
+    (t/is (contains? result :problems))))
+
+(t/deftest defschema-is-thin-convenience
+  (schema/defschema user-schema [:map [:name :string] [:age [:maybe :int]]])
+  (t/is (true? (schema/valid? user-schema {:name "Ada" :age 1}))))
+
+(t/deftest generate-and-sample-are-exported
+  (t/is (schema/valid? [:vector :int]
+      (schema/generate [:vector :int] {:seed 42 :size 3})))
+  (t/is (= 3 (count (schema/sample [:enum :a :b] 3 {:seed 7})))))
+
+(t/deftest shrink-and-shrink-seq-are-exported
+  (schema/defschema user-schema [:map [:name :string] [:age [:maybe :int]]])
+  (t/is (= "lazy-seq" (type-name (schema/shrink :int 10))))
+  (t/is (= [0 5 9] (schema/shrink-seq :int 10 3)))
+  (t/is (= [true true true]
+      (vec (map (fn [v] (schema/valid? user-schema v))
+          (take 3 (schema/shrink user-schema {:name "Ada" :age 37})))))))
+
+(t/deftest instrument-and-unstrument-support-direct-callables
+  (let [f (schema/instrument (fn [x] x) {:args [:tuple :int] :ret :int})]
+    (t/is (= 1 (f 1)))
+    (t/is (= "instrumented args do not satisfy contract"
+        (:reason (try
+            (f "x")
+            (catch [e]
+              (ex-data e))))))
+    (t/is (fn? (schema/unstrument f)))))
+
+(t/deftest check-is-exported-with-report-map-surface
+  (let [pass (schema/check (fn [x] true) :int {:seed 7 :iterations 2})
+      tuple-fail (schema/check (fn [x y] false) [:tuple [:enum 3] [:enum 4]] {:iterations 1})
+      zero-fail (schema/check (fn [] false) [:tuple] {:iterations 1})
+      threw (schema/check (fn [x] (throw (ex-info "boom" {:value x}))) [:enum :boom] {:iterations 1})]
+    (t/is (map? pass))
+    (t/is (= true (:pass? pass)))
+    (t/is (= 2 (:iterations pass)))
+    (t/is (= 7 (:seed pass)))
+    (t/is (= nil (:failing-input pass)))
+    (t/is (= false (:pass? tuple-fail)))
+    (t/is (= [3 4] (:failing-input tuple-fail)))
+    (t/is (= [] (:failing-input zero-fail)))
+    (t/is (= [] (:shrunk-input zero-fail)))
+    (t/is (= :threw (:kind (:failure threw))))
+    (t/is (str/includes? (:message (:exception (:failure threw))) "boom"))))
+
+(t/deftest check-report-predicates-describe-canonical-reports
+  (let [pass (schema/check (fn [x] true) :int {:seed 7 :iterations 1})
+      fail (schema/check (fn [x] false) [:enum 42] {:iterations 1})]
+    (t/is (schema/check-report? pass))
+    (t/is (schema/check-report? fail))
+    (t/is (not (schema/check-report? {:pass? true})))
+    (t/is (schema/check-pass? pass))
+    (t/is (not (schema/check-pass? fail)))
+    (t/is (not (schema/check-pass? "not a report")))))
+
+(t/deftest check-propagates-canonical-errors
+  (t/is (= "malformed iteration count"
+      (:reason (try
+          (schema/check (fn [x] true) :int {:iterations "x"})
+          (catch [e]
+            (ex-data e))))))
+  (t/is (= "predicate"
+      (:schema_kind (try
+          (schema/check (fn [x] true) [:predicate identity] {:iterations 1})
+          (catch [e]
+            (ex-data e)))))))
+
+(t/deftest for-all-expands-to-check
+  (let [report (schema/for-all {:seed 7 :iterations 2}
+        [x :int]
+        true)]
+    (t/is (= true (:pass? report)))
+    (t/is (= 2 (:iterations report)))
+    (t/is (= 7 (:seed report)))))
+
+(t/deftest for-all-supports-tuple-and-zero-arg-sugar
+  (let [tuple-report (schema/for-all [x [:enum 3] y [:enum 4]] false)
+      zero-report (schema/for-all [] false)]
+    (t/is (= false (:pass? tuple-report)))
+    (t/is (= [3 4] (:failing-input tuple-report)))
+    (t/is (= false (:pass? zero-report)))
+    (t/is (= [] (:failing-input zero-report)))
+    (t/is (= [] (:shrunk-input zero-report)))))
+
+(t/deftest for-all-preserves-shrink-detail
+  (let [report (schema/for-all {:seed 1
+          :iterations 1
+          :generator-overrides {:int 42}
+          :shrink-limit 5}
+        [x :int]
+        false)]
+    (t/is (= false (:pass? report)))
+    (t/is (= 42 (:failing-input report)))
+    (t/is (= 0 (:shrunk-input report)))
+    (t/is (seq (:shrink-steps report)))))
+
+(t/deftest for-all-forwards-full-option-map
+  (let [report (schema/for-all {:seed 1
+          :iterations 1
+          :size 3
+          :generator-overrides {:int 42}
+          :shrink-limit 5}
+        [x :int]
+        false)]
+    (t/is (= 1 (:seed report)))
+    (t/is (= 1 (:iterations report)))
+    (t/is (= 42 (:failing-input report)))))

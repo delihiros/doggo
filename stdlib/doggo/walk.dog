@@ -1,0 +1,81 @@
+; =====================
+; Doggo Walk Library
+; =====================
+(ns doggo.walk)
+
+(def walk
+  (fn [inner outer form]
+    (outer
+      (cond
+        (list? form) (apply list (map inner form))
+        (vector? form) (vec (map inner form))
+        (map? form) (reduce-kv (fn [acc k v]
+            (assoc acc
+              (inner k)
+              (inner v)))
+          {}
+          form)
+        (set? form) (into #{} (map inner form))
+        :else form))))
+
+(def prewalk
+  (fn [f form]
+    (walk (fn [x] (prewalk f x)) identity (f form))))
+
+(def postwalk
+  (fn [f form]
+    (walk (fn [x] (postwalk f x)) f form)))
+
+(def ^:private -replace-match
+  (fn [smap form]
+    (if (contains? smap form)
+      (get smap form)
+      form)))
+
+(def ^:private -key->string
+  (fn [k]
+    (cond
+      (keyword? k) (subs (str k) 1)
+      :else k)))
+
+(def keywordize-keys
+  (fn [form]
+    (postwalk (fn [x]
+        (if (map? x)
+          (reduce-kv (fn [acc k v]
+              (assoc acc
+                (if (string? k)
+                  (keyword k)
+                  k)
+                v))
+            {}
+            x)
+          x))
+      form)))
+
+(def stringify-keys
+  (fn [form]
+    (postwalk (fn [x]
+        (if (map? x)
+          (reduce-kv (fn [acc k v]
+              (assoc acc (-key->string k) v))
+            {}
+            x)
+          x))
+      form)))
+
+(def macroexpand-all
+  (fn [form]
+    (prewalk (fn [x]
+        (if (list? x)
+          (macroexpand x)
+          x))
+      form)))
+
+(def prewalk-replace
+  (fn [smap form]
+    (prewalk (fn [x] (-replace-match smap x)) form)))
+
+(def postwalk-replace
+  (fn [smap form]
+    (postwalk (fn [x] (-replace-match smap x)) form)))

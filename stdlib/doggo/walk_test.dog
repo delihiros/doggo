@@ -1,0 +1,71 @@
+; =====================
+; doggo.walk tests
+; =====================
+(ns doggo.walk-test
+  (:require [doggo.walk :as walk]
+    [doggo.string :as str]
+    [doggo.test :as t]))
+
+(t/deftest walk-functions-traverse-recursively
+  (t/is (= {:nums [2 3 {:deep 4}]}
+      (walk/postwalk (fn [x] (if (number? x) (inc x) x))
+        {:nums [1 2 {:deep 3}]})))
+  (t/is (= [10 {:score 2}]
+      (walk/walk (fn [x] (if (number? x) (* x 10) x))
+        identity
+        [1 {:score 2}])))
+  (t/is (= {:user {:name "Ada" :roles [{:id 1}]}}
+      (walk/keywordize-keys {"user" {"name" "Ada" "roles" [{"id" 1}]}})))
+  (t/is (= {"user" {"name" "Ada"}}
+      (walk/stringify-keys {:user {:name "Ada"}})))
+  (t/is (= '{foo 1 "bar" 2}
+      (walk/stringify-keys '{foo 1 :bar 2})))
+  (t/is (= [1 {1 1}]
+      (walk/prewalk-replace {:x 1} [:x {:x :x}])))
+  (t/is (= [1 {1 1}]
+      (walk/postwalk-replace {:x 1} [:x {:x :x}])))
+  (t/is (= "(if true (do (if false (do 1) nil)) nil)"
+      (pr-str (walk/macroexpand-all '(when true (when false 1)))))))
+
+(t/deftest macroexpand-all-expands-until-no-macros-remain
+  (let [expanded (pr-str (walk/macroexpand-all '(cond-> 1 true inc)))]
+    (t/is (not (str/includes? expanded "cond->")))
+    (t/is (str/includes? expanded "let"))))
+
+(t/deftest macroexpand-expands-quasiquote-forms
+  (let [spliced (pr-str (macroexpand '`(a ~@(when true [1 2]) b)))]
+    (do
+      (t/is (= "(doggo.core/list (quote doggo.core/when) true 1)"
+          (pr-str (macroexpand '`(when true 1)))))
+      (t/is (= "(doggo.core/list (when true 1))"
+          (pr-str (macroexpand '`(~(when true 1))))))
+      (t/is (str/includes? spliced "(doggo.core/apply doggo.core/list")))
+    (t/is (str/includes? spliced "(when true [1 2])"))
+    (t/is (str/includes? spliced "/a))"))
+    (t/is (str/includes? spliced "/b))))")))
+  (let [nested (pr-str (macroexpand '`(1 `(2 ~x) 3)))]
+    (do
+      (t/is (str/includes? nested "(doggo.core/list 1 (doggo.core/list (quote quasiquote)")))
+    (t/is (str/includes? nested "(quote unquote)"))
+    (t/is (str/includes? nested "/x)))) 3)")))
+  (do
+    (t/is (= "(doggo.core/list 1 #{x} 3)"
+        (pr-str (macroexpand '`(1 #{~x} 3)))))
+    (t/is (= "{:a x}"
+        (pr-str (macroexpand '`{:a ~x}))))
+    (t/is (= "(doggo.core/with-meta [1 2] {:tag :x})"
+        (pr-str (macroexpand '`^{:tag :x} [1 2]))))))
+
+(t/deftest macroexpand-all-expands-inside-quote-like-forms
+  (let [spliced (pr-str (walk/macroexpand-all '`(a ~@(when true [1 2]) b)))]
+    (do
+      (t/is (= "(quote (if true (do 1) nil))"
+          (pr-str (walk/macroexpand-all '(quote (when true 1))))))
+      (t/is (= "(doggo.core/list (quote doggo.core/when) true 1)"
+          (pr-str (walk/macroexpand-all '`(when true 1)))))
+      (t/is (= "(doggo.core/list (if true (do 1) nil))"
+          (pr-str (walk/macroexpand-all '`(~(when true 1))))))
+      (t/is (str/includes? spliced "(doggo.core/apply doggo.core/list")))
+    (t/is (str/includes? spliced "(if true (do [1 2]) nil)"))
+    (t/is (str/includes? spliced "/a))"))
+    (t/is (str/includes? spliced "/b))))"))))

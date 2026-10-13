@@ -1,0 +1,1092 @@
+;; =============================================================================
+;; Doggo 言語チュートリアル
+;; =============================================================================
+;;
+;; このファイルは実行可能なDoggoスクリプトです。
+;; 以下のコマンドで実行できます：
+;;
+;;   doggo mod sync
+;;   doggo build
+;;   doggo exec -- examples/tutorial.dog
+;;
+;; =============================================================================
+
+(require '[doggo.set :as set]
+  '[doggo.string :as string])
+
+;; -----------------------------------------------------------------------------
+;; 1. Hello World & 基本演算
+;; -----------------------------------------------------------------------------
+
+(println "=== 1. Hello World & Basic Arithmetic ===")
+
+(println "Hello, Doggo!")
+
+;; 四則演算
+(println "1 + 2 =" (+ 1 2))
+(println "10 - 5 =" (- 10 5))
+(println "3 * 4 =" (* 3 4))
+(println "10 / 2 =" (/ 10 2))
+
+;; 文字列結合
+(println (str "Doggo" " " "is" " " "Lisp"))
+
+;; -----------------------------------------------------------------------------
+;; 2. データ構造の操作
+;; -----------------------------------------------------------------------------
+
+(println "\n=== 2. Data Structures ===")
+
+;; リスト
+(def my-list '(1 2 3))
+(println "List:" my-list)
+(println "First:" (first my-list))
+(println "Rest:" (rest my-list))
+
+;; ベクター
+(def my-vec [10 20 30])
+(println "Vector:" my-vec)
+(println "Nth 1:" (nth my-vec 1))
+(println "Conj:" (conj my-vec 40)) ; 不変なので新しいベクターが返る
+
+;; マップ
+(def my-map {:name "Doggo" :lang "Go"})
+(println "Map:" my-map)
+(println "Get :name:" (get my-map :name))
+(println "Keyword access:" (:lang my-map)) ; キーワードを関数として使用
+(println "Assoc:" (assoc my-map :ver 1.0))
+
+;; セット (Set) - 重複のない要素の集合
+(def my-set #{:apple :banana :cherry})
+(println "Set:" my-set)
+(println "Contains :apple?" (contains? my-set :apple))
+(println "Contains :grape?" (contains? my-set :grape))
+(println "Set as function:" (my-set :banana)) ; セットを関数として使用
+(println "Conj:" (conj my-set :grape))
+(println "Disj:" (disj my-set :banana))
+(println "Set from vector:" (set [1 2 3 1 2])) ; 重複は自動的に除去される
+
+;; -----------------------------------------------------------------------------
+;; 3. 関数定義と制御構造
+;; -----------------------------------------------------------------------------
+
+(println "\n=== 3. Functions & Control Flow ===")
+
+;; 関数定義
+(defn greet [name]
+  (str "Hello, " name "!"))
+
+(println (greet "World"))
+
+;; 条件分岐 (if)
+(defn check-number [n]
+  (if (> n 10)
+    "Greater than 10"
+    "10 or less"))
+
+(println "Check 15:" (check-number 15))
+(println "Check 5:" (check-number 5))
+
+;; 複数条件分岐 (cond)
+;; cond はテスト/式のペアを順番に評価し、最初に真となった式の値を返す
+(defn grade [score]
+  (cond
+    (>= score 90) "A"
+    (>= score 80) "B"
+    (>= score 70) "C"
+    (>= score 60) "D"
+    :else "F"))
+
+(println "Grade 95:" (grade 95))
+(println "Grade 82:" (grade 82))
+(println "Grade 55:" (grade 55))
+
+;; cond を使った FizzBuzz
+(defn fizzbuzz [n]
+  (cond
+    (= 0 (rem n 15)) "FizzBuzz"
+    (= 0 (rem n 3))  "Fizz"
+    (= 0 (rem n 5))  "Buzz"
+    :else            n))
+
+(println "FizzBuzz 15:" (fizzbuzz 15))
+(println "FizzBuzz 9:" (fizzbuzz 9))
+(println "FizzBuzz 10:" (fizzbuzz 10))
+(println "FizzBuzz 7:" (fizzbuzz 7))
+
+;; ローカルバインディング (let)
+(let [x 10
+    y 20]
+  (println "Let calculation:" (+ x y)))
+
+;; 再帰 (loop/recur) - 階乗計算
+(defn factorial [n]
+  (loop [cnt n acc 1]
+    (if (<= cnt 1)
+      acc
+      (recur (dec cnt) (* acc cnt)))))
+
+(println "Factorial of 5:" (factorial 5))
+
+;; -----------------------------------------------------------------------------
+;; 4. Go Interop (相互運用)
+;; -----------------------------------------------------------------------------
+
+(println "\n=== 4. Go Interop ===")
+
+;; パッケージのインポート
+(import "fmt")
+(import "strings")
+(import "time")
+
+;; Go関数の呼び出し
+(println "ToUpper:" (strings/ToUpper "doggo"))
+
+;; オブジェクトのメソッド呼び出し
+(let [now (time/Now)]
+  (println "Current time:" (. now String)))
+
+;; 構造体の作成 (new) - 注意: 実際にはエクスポートされた型のみ使用可能
+;; ここでは文字列操作の例を示します
+(let [builder (new strings/Builder)]
+  (. builder WriteString "Built ")
+  (. builder WriteString "with ")
+  (. builder WriteString "Go interop")
+  (println "StringBuilder:" (. builder String)))
+
+;; -----------------------------------------------------------------------------
+;; 5. 並行処理 (Concurrency)
+;; -----------------------------------------------------------------------------
+
+(println "\n=== 5. Concurrency ===")
+
+;; チャネルの作成
+(def ch (chan))
+
+;; Goroutineの起動
+(go
+  (println "[Goroutine] Sleeping...")
+  (time/Sleep (* 100 time/Millisecond))
+  (println "[Goroutine] Woke up! Sending message...")
+  (>! ch "Message from Goroutine"))
+
+;; メインスレッドで受信待機
+(println "[Main] Waiting for message...")
+(let [msg (<! ch)]
+  (println "[Main] Received:" msg))
+
+;; -----------------------------------------------------------------------------
+;; 6. 高階関数 (Higher-Order Functions)
+;; -----------------------------------------------------------------------------
+
+(println "\n=== 6. Higher-Order Functions ===")
+
+;; --- reduce ---
+;; コレクションを畳み込んで単一の値にする
+
+(println "Sum of [1 2 3 4 5]:" (reduce + [1 2 3 4 5]))
+;; => 15
+
+(println "Sum with initial 10:" (reduce + 10 [1 2 3 4 5]))
+;; => 25
+
+(println "Concat strings:" (reduce str ["a" "b" "c" "d"]))
+;; => abcd
+
+;; --- map ---
+;; 各要素に関数を適用した遅延シーケンスを返す
+
+(defn double [x] (* x 2))
+
+(println "Map result:" (map double [1 2 3]))
+;; => (2 4 6) - 遅延シーケンス
+
+;; reduce と組み合わせてベクターに変換
+(println "Double [1 2 3]:" (reduce conj [] (map double [1 2 3])))
+;; => [2 4 6]
+
+(println "Square [1 2 3 4]:" (reduce conj [] (map (fn [x] (* x x)) [1 2 3 4])))
+;; => [1 4 9 16]
+
+;; --- filter ---
+;; 条件を満たす要素のみを含む遅延シーケンスを返す
+;; even? と odd? は組み込み関数として提供されている
+
+(println "Filter even [1 2 3 4 5 6]:" (reduce conj [] (filter even? [1 2 3 4 5 6])))
+;; => [2 4 6]
+
+(println "Filter odd [1 2 3 4 5 6]:" (reduce conj [] (filter odd? [1 2 3 4 5 6])))
+;; => [1 3 5]
+
+(println "Filter positive [-2 -1 0 1 2]:" (reduce conj [] (filter pos? [-2 -1 0 1 2])))
+;; => [1 2]
+
+;; --- 組み合わせ ---
+;; ->> マクロでパイプライン処理
+
+;; 偶数を2倍して合計
+(println "Even numbers doubled and summed:"
+  (->> [1 2 3 4 5 6 7 8 9 10]
+    (filter even?)
+    (map double)
+    (reduce +)))
+;; => 60
+
+;; 2倍して10以上のもの
+(println "Doubled >= 10:"
+  (reduce conj [] (->> [1 2 3 4 5 6 7 8 9 10]
+      (map double)
+      (filter (fn [x] (>= x 10))))))
+;; => [10 12 14 16 18 20]
+
+;; 最初の5個を3倍
+(println "Take 5 and triple:"
+  (reduce conj [] (->> [1 2 3 4 5 6 7 8 9 10]
+      (take 5)
+      (map (fn [x] (* x 3))))))
+;; => [3 6 9 12 15]
+
+;; -----------------------------------------------------------------------------
+;; 7. 状態管理 - Atom (State Management)
+;; -----------------------------------------------------------------------------
+
+(println "\n=== 7. Atoms (Mutable State) ===")
+
+;; Atomは同期的かつ独立した状態を管理する参照型です。
+;; 複数のGoroutineから安全にアクセス・更新できます。
+
+;; --- 基本操作 ---
+
+;; Atomの作成
+(def counter (atom 0))
+(println "Initial counter:" @counter)
+;; => 0
+
+;; deref (@) で現在値を取得
+(println "Deref counter:" (deref counter))
+;; => 0
+
+;; reset! で値を直接設定
+(reset! counter 10)
+(println "After reset! 10:" @counter)
+;; => 10
+
+;; swap! で関数を適用して更新
+(swap! counter inc)
+(println "After swap! inc:" @counter)
+;; => 11
+
+;; swap! に追加引数を渡す
+(swap! counter + 5)
+(println "After swap! + 5:" @counter)
+;; => 16
+
+;; --- 並行更新のデモ ---
+;; swap! はスレッドセーフ（CASベース）
+
+(def concurrent-counter (atom 0))
+
+;; 5つのGoroutineが同時にインクリメント
+(def done-ch (chan 5))
+
+(defn increment-many [n]
+  (loop [i 0]
+    (when (< i n)
+      (swap! concurrent-counter inc)
+      (recur (inc i)))))
+
+;; 5つのGoroutineを起動、各100回インクリメント
+(go (increment-many 100) (>! done-ch :done))
+(go (increment-many 100) (>! done-ch :done))
+(go (increment-many 100) (>! done-ch :done))
+(go (increment-many 100) (>! done-ch :done))
+(go (increment-many 100) (>! done-ch :done))
+
+;; 完了を待機
+(<! done-ch)
+(<! done-ch)
+(<! done-ch)
+(<! done-ch)
+(<! done-ch)
+
+(println "Concurrent counter (5 goroutines x 100):" @concurrent-counter)
+;; => 500 (レースコンディションなし)
+
+;; --- compare-and-set! (CAS) ---
+;; 現在値が期待値と一致する場合のみ更新
+
+(def cas-atom (atom 100))
+(println "CAS success:" (compare-and-set! cas-atom 100 200))
+;; => true
+(println "CAS atom after success:" @cas-atom)
+;; => 200
+
+(println "CAS fail:" (compare-and-set! cas-atom 100 300))
+;; => false (現在値は200なので失敗)
+(println "CAS atom after fail:" @cas-atom)
+;; => 200 (変わらない)
+
+;; --- swap-vals! と reset-vals! ---
+;; 更新前後の値を [old new] として返す
+
+(def vals-atom (atom {:count 0}))
+(println "swap-vals! result:" (swap-vals! vals-atom assoc :count 1))
+;; => [{:count 0} {:count 1}]
+
+(println "reset-vals! result:" (reset-vals! vals-atom {:count 100}))
+;; => [{:count 1} {:count 100}]
+
+;; -----------------------------------------------------------------------------
+;; 8. Ref と STM (Software Transactional Memory)
+;; -----------------------------------------------------------------------------
+
+(println "\n=== 8. Ref & STM (Coordinated State) ===")
+
+;; Refは協調的なトランザクション状態を管理する参照型です。
+;; 複数のRefを一貫性を保って同時に更新できます。
+;; すべての変更は dosync ブロック内で行う必要があります。
+
+;; --- 基本操作 ---
+
+;; Refの作成
+(def account-a (ref 1000))
+(def account-b (ref 500))
+
+(println "Account A:" @account-a)
+(println "Account B:" @account-b)
+
+;; dosync 内で複数の Ref を同時に更新
+;; 送金: A から B に 200 を移動
+(dosync
+  (alter account-a - 200)
+  (alter account-b + 200))
+
+(println "After transfer (A->B 200):")
+(println "Account A:" @account-a)
+;; => 800
+(println "Account B:" @account-b)
+;; => 700
+
+;; ref-set で値を直接設定
+(dosync
+  (ref-set account-a 1000)
+  (ref-set account-b 1000))
+
+(println "After reset:")
+(println "Account A:" @account-a)
+;; => 1000
+(println "Account B:" @account-b)
+;; => 1000
+
+;; --- ensure による読み取り保護 ---
+;; ensure は、トランザクション中に他のトランザクションから
+;; 変更されないことを保証します
+
+(def shared-ref (ref {:version 1}))
+
+(dosync
+  (let [current (ensure shared-ref)]
+    (println "Ensured value:" current)
+    ;; このトランザクション中、shared-ref は他から変更されない
+    (alter shared-ref assoc :version 2)))
+
+(println "After ensure+alter:" @shared-ref)
+
+;; -----------------------------------------------------------------------------
+;; 9. Agent (非同期状態管理)
+;; -----------------------------------------------------------------------------
+
+(println "\n=== 9. Agents (Asynchronous State) ===")
+
+;; Agentは非同期で状態を更新する参照型です。
+;; send で送信したアクションは順番に実行されます。
+
+;; --- 基本操作 ---
+
+;; Agentの作成
+(def log-agent (agent []))
+
+(println "Initial log:" @log-agent)
+;; => []
+
+;; send で非同期に更新
+(send log-agent conj "First entry")
+(send log-agent conj "Second entry")
+(send log-agent conj "Third entry")
+
+;; await で完了を待機
+(await log-agent)
+
+(println "After sends:" @log-agent)
+;; => ["First entry" "Second entry" "Third entry"]
+
+(def counter-agent (agent 0))
+
+;; 複数の非同期インクリメント
+(send counter-agent inc)
+(send counter-agent inc)
+(send counter-agent inc)
+
+(await counter-agent)
+(println "Counter agent:" @counter-agent)
+;; => 3
+
+;; --- エラーハンドリング ---
+
+(def error-agent (agent 0))
+
+;; エラーが発生するとAgentは停止状態になる
+;; (send error-agent (fn [x] (/ x 0)))
+
+;; agent-error でエラーを確認
+(println "Agent error:" (agent-error error-agent))
+;; => nil (エラーなし)
+
+;; restart-agent でエージェントを再開
+;; (restart-agent error-agent 0)
+
+;; --- Agent リング例 ---
+;; 複数の Agent をチェーンしてメッセージを転送
+
+(defn create-agent-chain [n done-ch]
+  "n個のAgentをチェーンで接続"
+  (let [tail (agent {:done-ch done-ch})]
+    (loop [next tail
+        count (dec n)]
+      (if (<= count 0)
+        next
+        (recur (agent {:next next}) (dec count))))))
+
+(defn relay [state msg]
+  "メッセージを次のAgentに転送"
+  (when (:next state)
+    (send (:next state) relay msg))
+  (when (:done-ch state)
+    (>! (:done-ch state) msg))
+  state)
+
+;; 小さなテスト: 5つのAgentチェーン
+(def chain-done (chan))
+(def chain-head (create-agent-chain 5 chain-done))
+
+(send chain-head relay "Hello through chain!")
+(println "Chain result:" (<! chain-done))
+
+;; -----------------------------------------------------------------------------
+;; 10. プロトコル (Protocols)
+;; -----------------------------------------------------------------------------
+
+(println "\n=== 10. Protocols (Polymorphism) ===")
+
+;; プロトコルは型に依存しないポリモーフィズムを実現します。
+;; 既存の型に対して、後からメソッドを追加できます。
+
+;; --- プロトコル定義 ---
+
+;; IStringable: 文字列への変換メソッドを定義
+(defprotocol IStringable
+  (to-string [this]))
+
+;; --- 型への実装追加 ---
+
+;; string 型への実装
+(extend-type string IStringable
+  (to-string [this] this))
+
+;; number 型への実装
+(extend-type number IStringable
+  (to-string [this] (str "num:" this)))
+
+;; vector 型への実装
+(extend-type vector IStringable
+  (to-string [this] (str "vec:" this)))
+
+;; 使用例
+(println "to-string on string:" (to-string "hello"))
+;; => hello
+
+(println "to-string on number:" (to-string 42))
+;; => num:42
+
+(println "to-string on vector:" (to-string [1 2 3]))
+;; => vec:[1 2 3]
+
+;; --- satisfies? による判定 ---
+
+(println "string satisfies?:" (satisfies? IStringable "hello"))
+;; => true
+
+(println "map satisfies?:" (satisfies? IStringable {:a 1}))
+;; => false (実装がない)
+
+;; --- デフォルト実装 (Object) ---
+
+;; Object に実装すると、特定の実装がない型のデフォルトになる
+(extend-type Object IStringable
+  (to-string [this] (str "default:" this)))
+
+;; map には個別実装がないので Object の実装が使われる
+(println "to-string on map:" (to-string {:a 1}))
+;; => default:{:a 1}
+
+;; --- 複数メソッドのプロトコル ---
+
+(defprotocol ICompare
+  (compare-to [this other])
+  (equal-to? [this other]))
+
+(extend-type number ICompare
+  (compare-to [this other]
+    (cond
+      (< this other) -1
+      (> this other) 1
+      :else 0))
+  (equal-to? [this other]
+    (= this other)))
+
+(println "compare-to 5 10:" (compare-to 5 10))
+;; => -1
+
+(println "compare-to 10 5:" (compare-to 10 5))
+;; => 1
+
+(println "equal-to? 5 5:" (equal-to? 5 5))
+;; => true
+
+;; --- 複数型への実装 ---
+;; 注意: empty? は組み込み関数として存在するので、別名を使用
+
+(defprotocol ICheckEmpty
+  (is-empty? [this]))
+
+;; 各型に個別に extend-type で実装
+(extend-type string ICheckEmpty
+  (is-empty? [this] (= this "")))
+
+(extend-type vector ICheckEmpty
+  (is-empty? [this] (= (count this) 0)))
+
+(extend-type list ICheckEmpty
+  (is-empty? [this] (nil? (first this))))
+
+(println "is-empty? on '':" (is-empty? ""))
+;; => true
+
+(println "is-empty? on 'hello':" (is-empty? "hello"))
+;; => false
+
+(println "is-empty? on []:" (is-empty? []))
+;; => true
+
+(println "is-empty? on [1 2]:" (is-empty? [1 2]))
+;; => false
+
+;; --- Go 型との相互運用 ---
+
+;; Go の型にもプロトコルを実装できる
+;; go-type-name で Go の型名を取得
+
+(let [builder (new strings/Builder)]
+  (. builder WriteString "test")
+  (println "Go type name:" (go-type-name builder)))
+;; => *strings.Builder
+
+;; Go 型への実装も extend-type で型名を指定
+(extend-type "*strings.Builder" IStringable
+  (to-string [this] (. this String)))
+
+(let [builder (new strings/Builder)]
+  (. builder WriteString "Hello from Go!")
+  (println "to-string on Builder:" (to-string builder)))
+;; => Hello from Go!
+
+;; --- type-name と extends? ---
+
+(println "type-name of 'hello':" (type-name "hello"))
+;; => string
+
+(println "type-name of 42:" (type-name 42))
+;; => number
+
+(println "extends? IStringable string:" (extends? IStringable "string"))
+;; => true
+
+;; -----------------------------------------------------------------------------
+;; 11. コレクション拡張操作
+;; -----------------------------------------------------------------------------
+
+(println "\n=== 11. Extended Collection Operations ===")
+
+;; --- merge: マップの結合 ---
+(println "merge maps:" (merge {:a 1 :b 2} {:c 3 :d 4}))
+;; => {:a 1 :b 2 :c 3 :d 4}
+
+(println "merge with override:" (merge {:a 1} {:a 2 :b 3}))
+;; => {:a 2 :b 3}
+
+;; --- zipmap: キーと値からマップを作成 ---
+(println "zipmap:" (zipmap [:a :b :c] [1 2 3]))
+;; => {:a 1 :b 2 :c 3}
+
+;; --- get-in / assoc-in: ネストしたデータへのアクセス ---
+(def nested-data {:user {:profile {:name "Alice" :age 30}}})
+
+(println "get-in:" (get-in nested-data [:user :profile :name]))
+;; => Alice
+
+(println "assoc-in:" (assoc-in nested-data [:user :profile :city] "Tokyo"))
+;; => {:user {:profile {:name "Alice" :age 30 :city "Tokyo"}}}
+
+;; --- update / update-in: 関数による値の更新 ---
+(def counter-map {:count 10 :data {:value 5}})
+
+(println "update:" (update counter-map :count inc))
+;; => {:count 11 :data {:value 5}}
+
+(println "update-in:" (update-in counter-map [:data :value] * 2))
+;; => {:count 10 :data {:value 10}}
+
+;; --- group-by: 関数でグループ化 ---
+(println "group-by even?:" (group-by even? [1 2 3 4 5 6]))
+;; => {false [1 3 5] true [2 4 6]}
+
+(def people [{:name "Alice" :dept "Engineering"}
+    {:name "Bob" :dept "Sales"}
+    {:name "Carol" :dept "Engineering"}])
+
+(println "group-by :dept:" (group-by :dept people))
+
+;; --- sort / sort-by: ソート ---
+(println "sort numbers:" (sort [3 1 4 1 5 9 2 6]))
+;; => (1 1 2 3 4 5 6 9)
+
+(println "sort strings:" (sort ["banana" "apple" "cherry"]))
+;; => ("apple" "banana" "cherry")
+
+(println "sort-by count:" (sort-by count ["aaa" "b" "cc"]))
+;; => ("b" "cc" "aaa")
+
+(println "sort-by :age:" (sort-by :age [{:name "Bob" :age 30} {:name "Alice" :age 25}]))
+
+;; -----------------------------------------------------------------------------
+;; 12. セット操作
+;; -----------------------------------------------------------------------------
+
+(println "\n=== 12. Set Operations ===")
+
+;; --- union: 和集合 ---
+(println "union:" (set/union #{1 2 3} #{3 4 5}))
+;; => #{1 2 3 4 5}
+
+;; --- intersection: 積集合 ---
+(println "intersection:" (set/intersection #{1 2 3} #{2 3 4}))
+;; => #{2 3}
+
+;; --- difference: 差集合 ---
+(println "difference:" (set/difference #{1 2 3 4 5} #{2 4}))
+;; => #{1 3 5}
+
+;; 複数セットの操作
+(println "union of 3 sets:" (set/union #{1 2} #{3 4} #{5 6}))
+(println "intersection of 3 sets:" (set/intersection #{1 2 3 4} #{2 3 4 5} #{3 4 5 6}))
+
+;; --- subset? / superset?: 部分集合判定 ---
+(println "subset?:" (set/subset? #{1 2} #{1 2 3 4}))
+;; => true
+
+(println "superset?:" (set/superset? #{1 2 3 4} #{1 2}))
+;; => true
+
+;; -----------------------------------------------------------------------------
+;; 13. 文字列フォーマットと置換
+;; -----------------------------------------------------------------------------
+
+(println "\n=== 13. String Formatting & Replacement ===")
+
+;; --- format: printf スタイルのフォーマット ---
+(println (format "Hello, %s!" "World"))
+;; => Hello, World!
+
+(println (format "Integer: %d, Float: %.2f" 42 3.14159))
+;; => Integer: 42, Float: 3.14
+
+(println (format "Percentage: %d%%" 100))
+;; => Percentage: 100%
+
+;; --- replace: 文字列置換 ---
+(println "replace:" (string/replace "hello world" "world" "universe"))
+;; => hello universe
+
+(println "replace all:" (string/replace "abab" "ab" "cd"))
+;; => cdcd
+
+;; --- 文字列述語 ---
+(println "blank? empty:" (string/blank? ""))
+(println "blank? whitespace:" (string/blank? "   "))
+(println "blank? text:" (string/blank? "hello"))
+
+(println "starts-with?:" (string/starts-with? "hello world" "hello"))
+(println "ends-with?:" (string/ends-with? "hello world" "world"))
+(println "includes?:" (string/includes? "hello world" "lo wo"))
+
+;; --- index-of / last-index-of ---
+(println "index-of 'l':" (string/index-of "hello" "l"))
+;; => 2
+(println "last-index-of 'l':" (string/last-index-of "hello" "l"))
+;; => 3
+
+;; -----------------------------------------------------------------------------
+;; 14. ユーティリティ関数
+;; -----------------------------------------------------------------------------
+
+(println "\n=== 14. Utility Functions ===")
+
+;; --- memoize: 結果のキャッシュ ---
+;; 高価な計算を一度だけ実行し、同じ引数での再呼び出しはキャッシュを返す
+
+(def slow-square
+  (memoize
+    (fn [x]
+      (println "  Computing square of" x)
+      (* x x))))
+
+(println "First call (slow-square 5):" (slow-square 5))
+(println "Second call (slow-square 5):" (slow-square 5))  ; キャッシュから
+(println "Third call (slow-square 5):" (slow-square 5))   ; キャッシュから
+
+;; --- complement: 述語の否定 ---
+(def not-even? (complement even?))
+
+(println "not-even? 3:" (not-even? 3))
+;; => true
+
+(println "not-even? 4:" (not-even? 4))
+;; => false
+
+(println "filter not-even?:" (doall (filter (complement even?) [1 2 3 4 5 6])))
+;; => (1 3 5)
+
+;; --- constantly: 定数を返す関数 ---
+(def always-42 (constantly 42))
+
+(println "always-42:" (always-42))
+(println "always-42 with args:" (always-42 :any :args :ignored))
+
+;; map と組み合わせ
+(println "map constantly:" (doall (map (constantly :default) [1 2 3])))
+;; => (:default :default :default)
+
+;; -----------------------------------------------------------------------------
+;; 15. 追加コレクション操作
+;; -----------------------------------------------------------------------------
+
+(println "\n=== 15. Additional Collection Operations ===")
+
+;; --- second / last / butlast ---
+(println "second:" (second [1 2 3 4]))
+;; => 2
+
+(println "last:" (last [1 2 3 4]))
+;; => 4
+
+(println "butlast:" (butlast [1 2 3 4]))
+;; => (1 2 3)
+
+;; --- distinct / dedupe ---
+(println "distinct:" (distinct [1 2 1 3 2 4]))
+;; => (1 2 3 4)
+
+(println "dedupe:" (dedupe [1 1 2 2 1 1 3]))
+;; => (1 2 1 3)  連続する重複のみ除去
+
+;; --- flatten ---
+(println "flatten:" (flatten [[1 2] [3 [4 5]]]))
+;; => (1 2 3 4 5)
+
+;; --- frequencies ---
+(println "frequencies:" (frequencies [:a :b :a :c :a :b]))
+
+;; --- interleave / interpose ---
+(println "interleave:" (interleave [1 2 3] [:a :b :c]))
+;; => (1 :a 2 :b 3 :c)
+
+(println "interpose:" (interpose :sep [1 2 3]))
+;; => (1 :sep 2 :sep 3)
+
+;; --- partition / partition-by ---
+(println "partition:" (partition 2 [1 2 3 4 5 6]))
+;; => ((1 2) (3 4) (5 6))
+
+(println "partition with step:" (partition 2 1 [1 2 3 4]))
+;; => ((1 2) (2 3) (3 4))
+
+(println "partition-by:" (partition-by even? [1 1 2 2 3 3]))
+;; => ((1 1) (2 2) (3 3))
+
+;; --- split-at / split-with ---
+(println "split-at:" (split-at 2 [1 2 3 4 5]))
+;; => [(1 2) (3 4 5)]
+
+(println "split-with:" (split-with #(< % 3) [1 2 3 4 5]))
+;; => [(1 2) (3 4 5)]
+
+;; --- merge-with / select-keys ---
+(println "merge-with:" (merge-with + {:a 1} {:a 2 :b 3}))
+;; => {:a 3, :b 3}
+
+(println "select-keys:" (select-keys {:a 1 :b 2 :c 3} [:a :c]))
+;; => {:a 1, :c 3}
+
+;; =============================================================================
+;; === 13. Regular Expressions ===
+;; =============================================================================
+(println "\n === 13. Regular Expressions ===")
+
+;; --- Regex Literals ---
+;; #"..." creates a compiled regular expression
+(println "Regex literal:" #"\d+")
+;; => #"\d+"
+
+;; --- re-pattern ---
+;; Create regex from string (useful for dynamic patterns)
+(println "re-pattern:" (re-pattern "\\d+"))
+;; => #"\d+"
+
+;; --- re-find ---
+;; Find first match in string
+(println "re-find digits:" (re-find #"\d+" "abc123def456"))
+;; => "123"
+
+(println "re-find no match:" (re-find #"\d+" "no numbers"))
+;; => nil
+
+;; With capture groups, returns a vector
+(println "re-find with groups:" (re-find #"(\d+)-(\d+)" "phone: 123-456"))
+;; => ["123-456" "123" "456"]
+
+;; --- re-matches ---
+;; Match entire string
+(println "re-matches success:" (re-matches #"\d+" "12345"))
+;; => "12345"
+
+(println "re-matches fail:" (re-matches #"\d+" "abc123"))
+;; => nil (not a complete match)
+
+;; With groups
+(println "re-matches with groups:" (re-matches #"(\d{3})-(\d{4})" "123-4567"))
+;; => ["123-4567" "123" "4567"]
+
+;; --- re-seq ---
+;; Find all matches as a sequence
+(println "re-seq:" (re-seq #"\d+" "a1b2c3d4"))
+;; => ("1" "2" "3" "4")
+
+(println "re-seq with groups:" (re-seq #"(\w)(\d)" "a1b2c3"))
+;; => (["a1" "a" "1"] ["b2" "b" "2"] ["c3" "c" "3"])
+
+;; --- regex? ---
+;; Test if value is a regex
+(println "regex? on literal:" (regex? #"\d+"))
+;; => true
+
+(println "regex? on string:" (regex? "not a regex"))
+;; => false
+
+;; --- Practical Examples ---
+;; Extract all numbers from text
+(def text "Price: $100, Quantity: 5, Total: $500")
+(println "Extract numbers:" (re-seq #"\d+" text))
+;; => ("100" "5" "500")
+
+;; Validate email format (simple)
+(defn valid-email? [s]
+  (not (nil? (re-matches #"[\w.+-]+@[\w.-]+\.\w+" s))))
+
+(println "valid-email? test@example.com:" (valid-email? "test@example.com"))
+;; => true
+
+(println "valid-email? invalid:" (valid-email? "not-an-email"))
+;; => false
+
+;; Parse key-value pairs
+(println "Parse key=value:"
+  (map (fn [m] [(get m 1) (get m 2)])
+    (re-seq #"(\w+)=(\w+)" "name=Alice age=30 city=NYC")))
+;; => (["name" "Alice"] ["age" "30"] ["city" "NYC"])
+
+;; =============================================================================
+;; === 14. I/O and Debugging ===
+;; =============================================================================
+(println "\n === 14. I/O and Debugging ===")
+
+;; --- prn ---
+;; prn prints values in machine-readable format (strings with quotes)
+(println "prn output:")
+(prn "hello world")
+;; Output: "hello world"
+
+(prn 1 2 3)
+;; Output: 1 2 3
+
+(prn {:name "Alice" :age 30})
+;; Output: {:name "Alice", :age 30}
+
+;; --- pr-str ---
+;; pr-str returns the machine-readable string representation
+(println "\npr-str examples:")
+(println "pr-str of string:" (pr-str "hello"))
+;; => "hello" (with quotes)
+
+(println "pr-str of vector:" (pr-str [1 2 3]))
+;; => [1 2 3]
+
+(println "pr-str multiple args:" (pr-str "a" "b" "c"))
+;; => "a" "b" "c"
+
+;; --- read-string ---
+;; read-string parses a string and returns the Doggo data structure
+(println "\nread-string examples:")
+
+(println "read-string number:" (read-string "42"))
+;; => 42
+
+(println "read-string vector:" (read-string "[1 2 3]"))
+;; => [1 2 3]
+
+(println "read-string map:" (read-string "{:a 1 :b 2}"))
+;; => {:a 1, :b 2}
+
+(println "read-string list:" (read-string "(+ 1 2)"))
+;; => (+ 1 2)
+
+;; --- Round-trip conversion ---
+;; pr-str and read-string are inverse operations
+(println "\nRound-trip test:")
+(def original-data {:name "Alice" :scores [95 87 92]})
+(def serialized (pr-str original-data))
+(println "Serialized:" serialized)
+
+(def deserialized (read-string serialized))
+(println "Deserialized:" deserialized)
+(println "Equal?" (= original-data deserialized))
+;; => true
+
+;; --- Practical example: Configuration parsing ---
+(def config-string "{:host \"localhost\" :port 8080 :debug true}")
+(def config (read-string config-string))
+(println "\nConfig host:" (get config :host))
+(println "Config port:" (get config :port))
+(println "Config debug:" (get config :debug))
+
+;; =============================================================================
+;; === 15. Testing Framework ===
+;; =============================================================================
+(println "\n=== 15. Testing Framework ===")
+
+;; Doggo にはテスト駆動開発のためのテストフレームワークがあります。
+;; doggo.test 名前空間を require して使用します。
+
+;; --- テストライブラリのロード ---
+;; (require 'doggo.test) でテストDSLを読み込みます
+(require 'doggo.test)
+
+;; --- 名前空間の設定 ---
+;; テストは通常独自の名前空間に配置します
+(ns tutorial.tests)
+
+;; --- doggo.test/deftest: テストの定義 ---
+;; テスト関数を定義し、自動的にテストレジストリに登録します
+;; 注意: マクロは doggo.test/ プレフィックスで呼び出します
+
+(doggo.test/deftest simple-arithmetic-test
+  ;; is マクロでアサーションを行う
+  (doggo.test/is (= (+ 1 2) 3))
+  (doggo.test/is (= (* 3 4) 12))
+  (doggo.test/is (= (/ 10 2) 5)))
+
+;; --- doggo.test/is: アサーションマクロ ---
+;; 式が真であることを検証します。失敗時は例外をスローします。
+
+(doggo.test/deftest assertion-examples
+  ;; 基本的な等価性テスト
+  (doggo.test/is (= 1 1))
+
+  ;; 比較演算子
+  (doggo.test/is (> 10 5))
+  (doggo.test/is (< 3 7))
+  (doggo.test/is (>= 5 5))
+
+  ;; 述語テスト
+  (doggo.test/is (even? 4))
+  (doggo.test/is (odd? 7))
+  (doggo.test/is (nil? nil))
+
+  ;; オプションのメッセージ付きアサーション
+  (doggo.test/is (= (count [1 2 3]) 3) "vector should have 3 elements"))
+
+;; --- doggo.test/testing: テストコンテキスト ---
+;; 関連するアサーションをグループ化し、失敗時のメッセージを改善します
+
+(doggo.test/deftest grouped-assertions
+  (doggo.test/testing "addition operations"
+    (doggo.test/is (= (+ 0 0) 0))
+    (doggo.test/is (= (+ 1 0) 1))
+    (doggo.test/is (= (+ 1 1) 2)))
+
+  (doggo.test/testing "subtraction operations"
+    (doggo.test/is (= (- 5 3) 2))
+    (doggo.test/is (= (- 10 10) 0))))
+
+;; --- ネストした testing ---
+(doggo.test/deftest nested-testing-contexts
+  (doggo.test/testing "string operations"
+    (doggo.test/testing "concatenation"
+      (doggo.test/is (= (str "a" "b") "ab"))
+      (doggo.test/is (= (str "hello" " " "world") "hello world")))
+    (doggo.test/testing "length"
+      (doggo.test/is (= (count "hello") 5)))))
+
+;; --- コレクション操作のテスト ---
+(doggo.test/deftest collection-tests
+  (doggo.test/testing "vector operations"
+    (doggo.test/is (= (first [1 2 3]) 1))
+    (doggo.test/is (= (rest [1 2 3]) '(2 3)))
+    (doggo.test/is (= (conj [1 2] 3) [1 2 3])))
+
+  (doggo.test/testing "map operations"
+    (let [m {:a 1 :b 2}]
+      (doggo.test/is (= (get m :a) 1))
+      (doggo.test/is (= (:b m) 2))
+      (doggo.test/is (= (assoc m :c 3) {:a 1 :b 2 :c 3})))))
+
+;; --- doggo.test/run-tests: テストの実行 ---
+;; 登録されたテストを実行し、結果サマリを返します
+
+(println "\n--- Running tests in tutorial.tests namespace ---")
+(def results (doggo.test/run-tests 'tutorial.tests))
+
+;; 結果は {:summary {:test N :pass N :fail N :error N ...} :cases [...]} で返される
+(println "Test results:" results)
+
+;; --- 特定の名前空間のテストを実行 ---
+;; (doggo.test/run-tests 'ns1 'ns2 ...) で複数の名前空間を指定可能
+
+;; --- 失敗するテストの例（コメントアウト）---
+;; 以下のコメントを外すと失敗するテストの動作を確認できます
+;; (doggo.test/deftest failing-test
+;;   (doggo.test/is (= 1 2) "This assertion will fail"))
+
+;; --- テスト結果の確認 ---
+(when (> (:fail (:summary results)) 0)
+  (println "WARNING: Some tests failed!"))
+
+(when (> (:error (:summary results)) 0)
+  (println "WARNING: Some tests had errors!"))
+
+(when (and (= (:fail (:summary results)) 0) (= (:error (:summary results)) 0))
+  (println "All tests passed!"))
+
+;; チュートリアルの名前空間に戻る
+(ns user)
+
+(println "\n=== Tutorial Complete! ===")

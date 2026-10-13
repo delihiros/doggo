@@ -1,0 +1,125 @@
+; =====================
+; Doggo EDN Library
+; =====================
+(ns doggo.edn
+  (:require [doggo.io :as io]))
+
+(def ^:private -invalid-argument
+  (fn [fn-name message argument actual]
+    (throw (ex-info message
+        {:kind :invalid-argument
+          :function fn-name
+          :argument argument
+          :actual actual}))))
+
+(def ^:private -write-string
+  (fn
+    ([value] (edn-write-string value))
+    ([value opts] (edn-write-string value opts))))
+(def ^:private -read-string-all (fn
+    ([s] (-read-string-all s {}))
+    ([s opts] (edn-read-string-all* s opts))))
+
+(def ^:private -read-option-keys
+  #{:readers :default :eof :location?})
+
+(def ^:private -validate-read-options
+  (fn [fn-name opts allow-eof?]
+    (let [label (str fn-name)]
+      (cond
+        (not (map? opts))
+        (-invalid-argument fn-name
+          (str label ": expected option map, got " (type-name opts))
+          :options opts)
+
+        :else
+        (do
+          (doseq [key (keys opts)]
+            (cond
+              (not (contains? -read-option-keys key))
+              (-invalid-argument fn-name
+                (str label ": unsupported option " key)
+                :options key)
+
+              (and (= key :eof) (not allow-eof?))
+              (-invalid-argument fn-name
+                (str label ": unsupported option :eof")
+                :options :eof)
+
+              :else nil))
+          (if (and (contains? opts :readers)
+              (not (map? (:readers opts))))
+            (-invalid-argument fn-name
+              (str label ": option :readers must be map")
+              :readers (:readers opts))
+            nil)
+          (if (and (contains? opts :default)
+              (not (fn? (:default opts))))
+            (-invalid-argument fn-name
+              (str label ": option :default must be function")
+              :default (:default opts))
+            nil)
+          (if (and (contains? opts :location?)
+              (not (boolean? (:location? opts))))
+            (-invalid-argument fn-name
+              (str label ": option :location? must be boolean")
+              :location? (:location? opts))
+            nil)
+          opts)))))
+
+(def ^:private -read-string
+  (fn
+    ([s] (-read-string s {}))
+    ([s opts] (edn-read-string s (-validate-read-options 'doggo.edn/read-string opts true)))))
+
+(def ^:private -source-string
+  (fn [fn-name source]
+    (try
+      (io/slurp source {:binary false})
+      (catch [e]
+        (throw (ex-info
+            (str fn-name ": " (ex-message e))
+            (assoc (ex-data e) :function fn-name)
+            e))))))
+
+(def ^:private -read
+  (fn
+    ([source] (-read source {}))
+    ([source opts]
+      (let [options (-validate-read-options 'doggo.edn/read opts true)
+          input (-source-string 'doggo.edn/read source)]
+        (edn-read-string input options)))))
+
+(def ^:private -read-string-all-public
+  (fn
+    ([s] (-read-string-all-public s {}))
+    ([s opts] (-read-string-all s (-validate-read-options 'doggo.edn/read-string-all opts false)))))
+
+(def ^:private -read-all
+  (fn
+    ([source] (-read-all source {}))
+    ([source opts]
+      (let [options (-validate-read-options 'doggo.edn/read-all opts false)
+          input (-source-string 'doggo.edn/read-all source)]
+        (-read-string-all input options)))))
+
+(def ^:private -write
+  (fn
+    ([value target] (-write value target {}))
+    ([value target opts]
+      (let [encoded (-write-string value opts)]
+        (try
+          (io/spit target encoded {:binary false})
+          (catch [e]
+            (throw (ex-info
+                (str "doggo.edn/write: " (ex-message e))
+                (assoc (ex-data e) :function 'doggo.edn/write)
+                e))))
+        nil))))
+
+(def read-string -read-string)
+(def write-string -write-string)
+(def read -read)
+(def read-string-all -read-string-all-public)
+(def read-all -read-all)
+(def write -write)

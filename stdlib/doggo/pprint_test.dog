@@ -1,0 +1,317 @@
+; =====================
+; doggo.pprint tests
+; =====================
+(ns doggo.pprint-test
+  (:require [doggo.pprint :as pprint]
+    [doggo.string :as str]
+    [doggo.test :as t]))
+
+(defrecord PprintUser [name tags])
+
+(t/deftest pprint-exposes-basic-formatting
+  (t/is (= "{:a 1, :b [2 3]}" (pprint/pprint-str {:a 1 :b [2 3]})))
+  (t/is (= nil (pprint/pprint {:a 1 :b [2 3]}))))
+
+(t/deftest pprint-supports-width-control
+  (t/is (= "{\n  :a 1\n  :b [2 3]\n}"
+      (pprint/pprint-str {:a 1 :b [2 3]} {:width 12})))
+  (t/is (= "{\n  :a 1\n  :b [2 3]\n}"
+      (pprint/pprint-str {:a 1 :b [2 3]} {:right-margin 12})))
+  (t/is (= "{\n    :a 1\n    :b [2 3]\n}"
+      (pprint/pprint-str {:a 1 :b [2 3]} {:width 12 :indent 4})))
+  (t/is (= "[\n  1\n  2\n  3\n]"
+      (pprint/pprint-str [1 2 3] {:width 4})))
+  (t/is (= "{\n  :a\n  [\n    1\n    2\n    3\n  ]\n}"
+      (pprint/pprint-str {:a [1 2 3]} {:width 8})))
+  (t/is (= "{\n  :name\n  \"Ada\"\n  :tags\n  [1 2 3]\n}"
+      (pprint/pprint-str (->PprintUser "Ada" [1 2 3]) {:width 12}))))
+
+(t/deftest pprint-baseline-formatting-without-dispatch-is-unchanged
+  (t/is (= "{:a 1, :b [2 3]}"
+      (pprint/pprint-str {:a 1 :b [2 3]})))
+  (t/is (= "{\n  :name\n  \"Ada\"\n  :tags\n  [1 2 3]\n}"
+      (pprint/pprint-str (->PprintUser "Ada" [1 2 3]) {:width 12}))))
+
+(t/deftest pprint-str-accepts-per-call-dispatch-for-custom-values
+  (t/is (= "{
+  :outer
+  <<1234567890>>
+}"
+      (pprint/pprint-str {:outer 1}
+        {:width 12
+          :dispatch (fn [value]
+            (if (= value 1)
+              "<<1234567890>>"
+              nil))})))
+  (t/is (= "{:outer 1}"
+      (pprint/pprint-str {:outer 1}
+        {:width 12
+          :dispatch (fn [value]
+            nil)}))))
+
+(t/deftest pprint-str-uses-built-in-dispatch-after-custom-record-override
+  (t/is (= "{:value <record Ada>, :list (4 5), :set #{6 7}, :vector [8 9], :map {:ok true}}"
+      (pprint/pprint-str {:value (->PprintUser "Ada" [1 2 3])
+          :list (list 4 5)
+          :set #{6 7}
+          :vector [8 9]
+          :map {:ok true}}
+        {:dispatch (fn [value]
+            (if (record? value)
+              (str "<record " (:name value) ">")
+              nil))})))
+  (t/is (= "{:value {:name \"Ada\", :tags [1 2 3]}}"
+      (pprint/pprint-str {:value (->PprintUser "Ada" [1 2 3])}
+        {:dispatch (fn [value]
+            nil)}))))
+
+
+(t/deftest pprint-set-pprint-dispatch-updates-ambient-default
+  (try
+    (pprint/set-pprint-dispatch! (fn [value]
+        (if (= value 42)
+          (str "<<" value ">>")
+          nil)))
+    (t/is (= "<<42>>" (pprint/pprint-str 42)))
+    (finally
+      (pprint/set-pprint-dispatch! (fn [_] nil)))))
+
+(t/deftest pprint-with-pprint-dispatch-is-scoped-and-nestable
+  (pprint/set-pprint-dispatch! (fn [_] nil))
+  (t/is (= "42" (pprint/pprint-str 42)))
+  (t/is (= "<<42>>"
+      (pprint/with-pprint-dispatch (fn [value]
+          (if (= value 42)
+            (str "<<" value ">>")
+            nil))
+        (pprint/pprint-str 42))))
+  (t/is (= "42" (pprint/pprint-str 42)))
+  (t/is (= "[[42]]|<<42>>|[[42]]"
+      (pprint/with-pprint-dispatch (fn [value]
+          (if (= value 42)
+            (str "[[" value "]]")
+            nil))
+        (str (pprint/pprint-str 42)
+          "|"
+          (pprint/with-pprint-dispatch (fn [value]
+              (if (= value 42)
+                (str "<<" value ">>")
+                nil))
+            (pprint/pprint-str 42))
+          "|"
+          (pprint/pprint-str 42)))))
+  (t/is (= "{{42}}"
+      (pprint/with-pprint-dispatch (fn [value]
+          (if (= value 42)
+            (str "<<" value ">>")
+            nil))
+        (pprint/pprint-str 42 {:dispatch (fn [value]
+              (if (= value 42)
+                (str "{{" value "}}")
+                nil))})))))
+
+(t/deftest pprint-logical-block-respects-width-and-indent
+  (let [dispatch (fn [value]
+        (if (= value :demo)
+          (pprint/pprint-logical-block
+            {:prefix "(" :suffix ")"}
+            (fn []
+              (pprint/write-out "alpha")
+              (pprint/pprint-newline :linear)
+              (pprint/pprint-indent 2)
+              (pprint/write-out "beta")))
+          nil))]
+    (t/is (= "(alpha beta)"
+        (pprint/pprint-str :demo {:width 80 :dispatch dispatch})))
+    (t/is (= "(\n  alpha\n  beta\n)"
+        (pprint/pprint-str :demo {:width 8 :dispatch dispatch})))))
+
+(t/deftest pprint-logical-block-supports-nested-blocks
+  (let [dispatch (fn [value]
+        (if (= value :nested)
+          (pprint/pprint-logical-block
+            {:prefix "[" :suffix "]"}
+            (fn []
+              (pprint/write-out "head")
+              (pprint/pprint-newline :linear)
+              (pprint/pprint-indent 2)
+              (pprint/pprint-logical-block
+                {:prefix "(" :suffix ")"}
+                (fn []
+                  (pprint/write-out "tail")
+                  (pprint/pprint-newline :linear)
+                  (pprint/write-out "end")))))
+          nil))]
+    (t/is (= "[\n  head\n  (\n    tail\n    end\n  )\n]"
+        (pprint/pprint-str :nested {:width 10 :dispatch dispatch})))))
+
+(t/deftest pprint-logical-block-can-render-outside-pprint-entrypoints
+  (t/is (= "(alpha beta)"
+      (pprint/pprint-logical-block
+        {:prefix "(" :suffix ")"}
+        (fn []
+          (pprint/write-out "alpha")
+          (pprint/pprint-newline :linear)
+          (pprint/write-out "beta"))))))
+
+(t/deftest pprint-mandatory-newline-forces-multiline-layout
+  (let [dispatch (fn [value]
+        (if (= value :mandatory)
+          (pprint/pprint-logical-block
+            {:prefix "(" :suffix ")"}
+            (fn []
+              (pprint/write-out "alpha")
+              (pprint/pprint-newline :mandatory)
+              (pprint/write-out "beta")))
+          nil))]
+    (t/is (= "(
+  alpha
+  beta
+)"
+        (pprint/pprint-str :mandatory {:width 80 :dispatch dispatch})))))
+
+(t/deftest pprint-tab-aligns-logical-block-columns
+  (let [dispatch (fn [value]
+        (if (= value :rows)
+          (pprint/pprint-logical-block
+            {:prefix "" :suffix ""}
+            (fn []
+              (pprint/write-out "id")
+              (pprint/pprint-tab :line 8 4)
+              (pprint/write-out "name")
+              (pprint/pprint-newline :mandatory)
+              (pprint/write-out "42")
+              (pprint/pprint-tab :line 8 4)
+              (pprint/write-out "Ada")))
+          nil))]
+    (t/is (= "id      name
+42      Ada"
+        (pprint/pprint-str :rows {:width 80 :dispatch dispatch})))
+    (t/is (= "id      name
+42      Ada"
+        (pprint/pprint-str :rows {:width 6 :dispatch dispatch})))))
+
+(t/deftest pprint-tab-supports-line-relative-stops
+  (t/is (= "a   b
+abcd    e"
+      (pprint/pprint-logical-block
+        {:prefix "" :suffix ""}
+        (fn []
+          (pprint/write-out "a")
+          (pprint/pprint-tab :line-relative 1 4)
+          (pprint/write-out "b")
+          (pprint/pprint-newline :mandatory)
+          (pprint/write-out "abcd")
+          (pprint/pprint-tab :line-relative 1 4)
+          (pprint/write-out "e"))))))
+
+(t/deftest pprint-rejects-invalid-option-values
+  (t/is (t/thrown-with-msg?
+      #"doggo.pprint/pprint-str: expected option map"
+      (pprint/pprint-str {:a 1} :bad)))
+  (t/is (t/thrown-with-msg?
+      #"unsupported option :bad"
+      (pprint/pprint-str {:a 1} {:bad true})))
+  (t/is (t/thrown-with-msg?
+      #"option :width must be number"
+      (pprint/pprint-str {:a 1} {:width "12"})))
+  (t/is (t/thrown-with-msg?
+      #"option :right-margin must be number"
+      (pprint/pprint-str {:a 1} {:right-margin "12"})))
+  (t/is (t/thrown-with-msg?
+      #"option :indent must be non-negative integer"
+      (pprint/pprint-str {:a 1} {:indent -1})))
+  (t/is (t/thrown-with-msg?
+      #"option :indent must be non-negative integer"
+      (pprint/pprint-str {:a 1} {:indent 1.5})))
+  (t/is (t/thrown-with-msg?
+      #"unsupported option :stream"
+      (pprint/pprint-str {:a 1} {:stream :bad})))
+  (t/is (t/thrown-with-msg?
+      #"option :dispatch must be function"
+      (pprint/pprint-str {:a 1} {:dispatch :bad})))
+  (t/is (t/thrown?
+      (pprint/table-str [:name] [{:name "Ada"}] {}))))
+
+(t/deftest pprint-rejects-extra-arguments-and-owns-validation-errors
+  (t/is (t/thrown? (pprint/pprint-str 1 {} {})))
+  (t/is (t/thrown? (pprint/pprint 1 {} {})))
+  (t/is (t/thrown? (pprint/table-str [:name] [{:name "Ada"}] {} :extra)))
+  (doseq [[call function] [[(fn [] (pprint/pprint-str 1 :bad))
+          'doggo.pprint/pprint-str]
+        [(fn [] (pprint/pprint 1 :bad))
+          'doggo.pprint/pprint]]]
+    (let [data (try
+          (call)
+          nil
+          (catch [e] (ex-data e)))]
+      (t/is (= :invalid-argument (:kind data)))
+      (t/is (= function (:function data)))
+      (t/is (= :options (:argument data)))
+      (t/is (= "map" (:expected data))))))
+
+(t/deftest pprint-logical-block-rejects-invalid-usage
+  (t/is (t/thrown-with-msg?
+      #"doggo.pprint/write-out: can only be used inside pprint-logical-block"
+      (pprint/write-out "alpha")))
+  (t/is (t/thrown-with-msg?
+      #"doggo.pprint/pprint-newline: can only be used inside pprint-logical-block"
+      (pprint/pprint-newline :linear)))
+  (t/is (t/thrown-with-msg?
+      #"doggo.pprint/pprint-indent: can only be used inside pprint-logical-block"
+      (pprint/pprint-indent 2)))
+  (t/is (t/thrown-with-msg?
+      #"doggo.pprint/pprint-tab: can only be used inside pprint-logical-block"
+      (pprint/pprint-tab :line 8 4)))
+  (t/is (t/thrown-with-msg?
+      #"unsupported newline kind"
+      (pprint/pprint-logical-block {:prefix "(" :suffix ")"}
+        (fn []
+          (pprint/pprint-newline :bogus)))))
+  (t/is (t/thrown-with-msg?
+      #"expected non-negative integer"
+      (pprint/pprint-logical-block {:prefix "(" :suffix ")"}
+        (fn []
+          (pprint/pprint-indent -1)))))
+  (t/is (t/thrown-with-msg?
+      #"option :prefix must be string"
+      (pprint/pprint-logical-block {:prefix 1}
+        (fn []
+          (pprint/write-out "x")))))
+  (t/is (t/thrown-with-msg?
+      #"unsupported tab kind"
+      (pprint/pprint-logical-block {:prefix "" :suffix ""}
+        (fn []
+          (pprint/pprint-tab :section 8 4)))))
+  (t/is (t/thrown-with-msg?
+      #"colnum must be non-negative integer"
+      (pprint/pprint-logical-block {:prefix "" :suffix ""}
+        (fn []
+          (pprint/pprint-tab :line -1 4)))))
+  (t/is (t/thrown-with-msg?
+      #"colinc must be positive integer"
+      (pprint/pprint-logical-block {:prefix "" :suffix ""}
+        (fn []
+          (pprint/pprint-tab :line 8 0))))))
+
+(t/deftest table-str-renders-a-readable-table
+  (let [table (pprint/table-str
+        [:name :age]
+        [{:name "Ada" :age 36}
+          {:name "Bob" :age 30}])]
+    (t/is (str/includes? table "name"))
+    (t/is (str/includes? table "Ada"))
+    (t/is (str/includes? table "Bob"))))
+
+
+(t/deftest table-str-renders-cell-values-through-shared-dispatch-layer
+  (let [record-cell (->PprintUser "Ada" [1 2 3])
+      vector-cell [4 5 6]
+      primitive-cell 42
+      table (pprint/table-str
+        [:name :payload :n]
+        [{:name "Ada" :payload record-cell :n primitive-cell}
+          {:name "Bob" :payload vector-cell :n 7}])]
+    (t/is (str/includes? table (pprint/pprint-str record-cell)))
+    (t/is (str/includes? table (pprint/pprint-str vector-cell)))
+    (t/is (str/includes? table (pprint/pprint-str primitive-cell)))))

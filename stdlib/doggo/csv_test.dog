@@ -1,0 +1,79 @@
+(ns doggo.csv-test
+  (:require [doggo.csv :as csv]
+    [doggo.io :as io]
+    [doggo.os :as os]
+    [doggo.test :as t]))
+
+(def csv-read-path
+  (io/join-path (os/system-temp-dir) (str "doggo-csv-read-" (nano-time) ".csv")))
+
+(def csv-write-path
+  (io/join-path (os/system-temp-dir) (str "doggo-csv-write-" (nano-time) ".csv")))
+
+(def csv-writer-path
+  (io/join-path (os/system-temp-dir) (str "doggo-csv-writer-" (nano-time) ".csv")))
+
+(def csv-stream-path
+  (io/join-path (os/system-temp-dir) (str "doggo-csv-stream-" (nano-time) ".csv")))
+
+(t/deftest read-string-converts-records
+  (t/is (= [["name" "age"] ["Ada" "36"]]
+      (csv/read-string "name,age\r\nAda,36\r\n")))
+  (t/is (= [{"name" "Ada" "note" "one,\ntwo"}]
+      (csv/read-string "name,note\nAda,\"one,\ntwo\"\n" {:headers true}))))
+
+(t/deftest write-string-converts-records
+  (t/is (= "name,note\nAda,\"one,two\"\n"
+      (csv/write-string [["name" "note"] ["Ada" "one,two"]])))
+  (t/is (= "\"\"\n"
+      (csv/write-string [[""]]))))
+
+(t/deftest conversion-round-trips
+  (let [rows [["" "comma,quote\""] ["embedded\nnewline" "plain"]]]
+    (t/is (= rows
+        (csv/read-string (csv/write-string rows))))))
+
+(t/deftest conversion-rejects-invalid-input
+  (t/is (t/thrown-with-msg?
+      #"doggo.csv/read-string"
+      (csv/read-string "name,name\nAda,36\n" {:headers true})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.csv/read-string"
+      (csv/read-string "" {:headers :yes})))
+  (t/is (t/thrown-with-msg?
+      #"doggo.csv/write-string"
+      (csv/write-string [["a" "b"] ["c"]])))
+  (t/is (t/thrown-with-msg?
+      #"doggo.csv/write-string"
+      (csv/write-string [["a" 1]]))))
+
+(t/deftest read-supports-path-reader-and-input-stream
+  (io/spit csv-read-path "name,age\nAda,36\n")
+  (t/is (= [["name" "age"] ["Ada" "36"]]
+      (csv/read csv-read-path)))
+  (t/is (= [["name" "age"] ["Ada" "36"]]
+      (csv/read (io/reader-spec csv-read-path))))
+  (t/is (= [{"name" "Ada" "age" "36"}]
+      (csv/read (io/input-stream-spec csv-read-path) {:headers true}))))
+
+(t/deftest write-supports-path-writer-and-output-stream
+  (t/is (nil? (csv/write [["a" "b"]] csv-write-path)))
+  (csv/write [["c" "d"]] (io/writer-spec csv-writer-path))
+  (csv/write [["e" "f"]] (io/output-stream-spec csv-stream-path))
+  (t/is (= "a,b\n" (io/slurp csv-write-path)))
+  (t/is (= "c,d\n" (io/slurp csv-writer-path)))
+  (t/is (= "e,f\n" (io/slurp csv-stream-path))))
+
+(t/deftest io-rejects-invalid-descriptors-and-append
+  (t/is (t/thrown-with-msg?
+      #"doggo.csv/read: doggo.io/slurp:"
+      (csv/read :bad)))
+  (t/is (t/thrown-with-msg?
+      #"doggo.csv/read: doggo.io/slurp:"
+      (csv/read (io/writer-spec csv-read-path))))
+  (t/is (t/thrown-with-msg?
+      #"doggo.csv/write: doggo.io/spit:"
+      (csv/write [["a"]] :bad)))
+  (t/is (t/thrown-with-msg?
+      #"does not support append"
+      (csv/write [["a"]] (io/output-stream-spec csv-write-path {:append true})))))

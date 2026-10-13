@@ -1,0 +1,93 @@
+{
+  "comments": {
+    "lineComment": ";;"
+  },
+  "brackets": [
+    [
+      "(",
+      ")"
+    ],
+    [
+      "[",
+      "]"
+    ],
+    [
+      "{",
+      "}"
+    ]
+  ],
+  "autoClosingPairs": [
+    {
+      "open": "(",
+      "close": ")"
+    },
+    {
+      "open": "[",
+      "close": "]"
+    },
+    {
+      "open": "{",
+      "close": "}"
+    },
+    {
+      "open": "\"",
+      "close": "\""
+    }
+  ],
+  "surroundingPairs": [
+    [
+      "(",
+      ")"
+    ],
+    [
+      "[",
+      "]"
+    ],
+    [
+      "{",
+      "}"
+    ],
+    [
+      "\"",
+      "\""
+    ]
+  ],
+  "indentationRules": {
+    "increaseIndentPattern": "^\\s*(?:[^\\n;\"']*\\([^\\n;\"')]*$|[^\\n;\"']*\\[[^\\n;\"'\\]]*$|[^\\n;\"']*\\{[^\\n;\"'}]*$)",
+    "decreaseIndentPattern": "^\\s*[\\)\\]\\}]",
+    "indentNextLinePattern": "^\\s*\\((?:def|defn|defmacro|defonce|fn|let|letfn|loop|if|if-let|when|when-let|do|try|catch|doseq|for|ns|require|import|go|dosync|deftype|defrecord|defmulti|defmethod)\\b.*$"
+  },
+  "onEnterRules": [
+    {
+      "beforeText": "^\\s*.*[\\(\\[\\{][^\\)\\]\\}]*$",
+      "afterText": "^\\s*[\\)\\]\\}].*$",
+      "action": {
+        "indentAction": "indentOutdent"
+      }
+    },
+    {
+      "beforeText": "^\\s*.*[\\)\\]\\}]\\s*$",
+      "action": {
+        "indentAction": "outdent"
+      }
+    },
+    {
+      "beforeText": "^\\s*\\((?:def|defn|defmacro|defonce|fn|let|letfn|loop|if|if-let|when|when-let|do|try|catch|doseq|for|ns|require|import|go|dosync|deftype|defrecord|defmulti|defmethod)\\b.*$",
+      "action": {
+        "indentAction": "indent"
+      }
+    },
+    {
+      "beforeText": "^\\s*\\([^\\)]*\\S\\s*$",
+      "action": {
+        "indentAction": "indent"
+      }
+    },
+    {
+      "beforeText": "^\\s*.*[\\(\\[\\{]\\s*$",
+      "action": {
+        "indentAction": "indent"
+      }
+    }
+  ]
+}

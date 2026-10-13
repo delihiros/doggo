@@ -1,0 +1,55 @@
+; =====================
+; doggo.observability tests
+; =====================
+(ns doggo.observability-test
+  (:require [doggo.observability :as obs]
+    [doggo.test :as t]))
+
+(t/deftest observability-metrics-wrappers
+  (obs/metric-inc! "doggo.observability.requests")
+  (obs/metric-inc! "doggo.observability.requests" 2)
+  (obs/metric-set-gauge! "doggo.observability.cpu" 0.5)
+  (obs/metric-observe! "doggo.observability.latency" 10)
+  (obs/metric-observe! "doggo.observability.latency" 20)
+  (let [snapshot (obs/metrics-snapshot)
+      counters (:counters snapshot)
+      gauges (:gauges snapshot)
+      histograms (:histograms snapshot)
+      latency (get histograms "doggo.observability.latency")]
+    (t/is (= 3.0 (get counters "doggo.observability.requests")))
+    (t/is (= 0.5 (get gauges "doggo.observability.cpu")))
+    (t/is (= 2 (:count latency)))
+    (t/is (= 30.0 (:sum latency)))
+    (t/is (= 10.0 (:min latency)))
+    (t/is (= 20.0 (:max latency)))))
+
+(t/deftest observability-trace-wrappers
+  (let [result (obs/with-span "calc" (fn [] [(obs/trace-id) (obs/correlation-id)]))]
+    (t/is (string? (get result 0)))
+    (t/is (< 0 (count (get result 0))))
+    (t/is (string? (get result 1)))
+    (t/is (< 0 (count (get result 1))))))
+
+(t/deftest observability-event-helper
+  (t/is (nil? (obs/event! :job/start)))
+  (t/is (nil? (obs/event! :job/ok {:user "alice" :event "ignored"})))
+  (t/is (nil? (obs/event! :warn :job/fail nil)))
+  (t/is (nil? (obs/event! :notice :job/queued nil)))
+  (t/is (nil? (obs/event! "ERROR" :job/panic nil)))
+  (t/is (nil? (obs/event! 'warn :job/symbol-level nil)))
+  (t/is (nil? (obs/event! :warn {:kind :event-name})))
+  (t/is (nil? (obs/event! :warn :job/fail {:reason "boom"})))
+  (t/is (= "log!: argument 2: expected string/symbol/keyword, got number"
+      (try
+        (obs/event! :notice 42 nil)
+        nil
+        (catch [e] (ex-message e)))))
+  (t/is (t/thrown-with-msg?
+      #"doggo\.observability/event!: 2-arg form requires fields map"
+      (obs/event! :warn :job/fail)))
+  (t/is (t/thrown-with-msg?
+      #"doggo\.observability/event!: 2-arg form requires fields map"
+      (obs/event! :warn nil)))
+  (t/is (t/thrown-with-msg?
+      #"doggo\.observability/event!: fields must be map or nil"
+      (obs/event! :warn :job/bad :nope))))

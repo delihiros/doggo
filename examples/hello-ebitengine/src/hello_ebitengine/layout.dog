@@ -1,0 +1,5 @@
+(ns hello_ebitengine.layout)
+
+(def layout
+  (fn [_width _height]
+    [320 240]))
