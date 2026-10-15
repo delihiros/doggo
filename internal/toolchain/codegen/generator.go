@@ -1092,7 +1092,15 @@ func containedOutput(moduleRoot, output string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	rootAbs, err = project.NormalizeSystemPath(rootAbs)
+	if err != nil {
+		return "", "", err
+	}
 	outputAbs, err := filepath.Abs(output)
+	if err != nil {
+		return "", "", err
+	}
+	outputAbs, err = project.NormalizeSystemPath(outputAbs)
 	if err != nil {
 		return "", "", err
 	}
@@ -1107,6 +1115,14 @@ func containedOutput(moduleRoot, output string) (string, string, error) {
 }
 
 func validateGeneratedPackage(moduleRoot, output string, source []byte, isolated bool) error {
+	moduleRoot, err := project.NormalizeSystemPath(moduleRoot)
+	if err != nil {
+		return err
+	}
+	output, err = project.NormalizeSystemPath(output)
+	if err != nil {
+		return err
+	}
 	dirRel, err := filepath.Rel(moduleRoot, filepath.Dir(output))
 	if err != nil {
 		return err
@@ -1149,7 +1165,11 @@ func validateGeneratedPackage(moduleRoot, output string, source []byte, isolated
 	compiledPackages := 0
 	for _, pkg := range pkgs {
 		for _, file := range pkg.CompiledGoFiles {
-			if filepath.Clean(file) == output {
+			file, err := project.NormalizeSystemPath(filepath.Clean(file))
+			if err != nil {
+				return err
+			}
+			if file == output {
 				compiledPackages++
 				break
 			}
