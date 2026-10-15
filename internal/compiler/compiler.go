@@ -76,9 +76,10 @@ var (
 
 // CompilationScope はコンパイル中のスコープを表します。
 type CompilationScope struct {
-	instructions        opcode.Instructions
-	lastInstruction     EmittedInstruction
-	previousInstruction EmittedInstruction
+	instructions          opcode.Instructions
+	lastInstruction       EmittedInstruction
+	previousInstruction   EmittedInstruction
+	catchFinallyLoopDepth int // Recur must stay in loops created inside an active catch/finally.
 }
 
 // EmittedInstruction は発行された命令の情報を保持します。
