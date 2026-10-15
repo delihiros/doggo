@@ -80,7 +80,7 @@ func TestSyncTreeRejectsSpecialFiles(t *testing.T) {
 	}
 }
 
-// Directory enumeration reads the socket mode even when Windows refuses to
+// Directory enumeration reads the fixture's mode even when Windows refuses to
 // reopen its reparse point. Identity is verified by the platform's fixture.
 func socketInfoForTest(t *testing.T, root string) fs.FileInfo {
 	t.Helper()

@@ -103,6 +103,62 @@ func TestSocketFixtureVerifiesIdentityWithoutPathLookup(t *testing.T) {
 	}
 }
 
+func TestSocketFixtureAllowsPathStatMetadataRefresh(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "socket")
+	verifySocket := createSocketFileForTest(t, path)
+	before := socketInfoForTest(t, root)
+	if err := verifySocket(before, before); err != nil {
+		t.Fatal(err)
+	}
+	// A pathname stat can refresh directory attributes even when Windows
+	// rejects opening the AF_UNIX point. The retained handle's tag stays put.
+	_, statErr := os.Lstat(path)
+	if statErr != nil && !errors.Is(statErr, windows.ERROR_CANT_ACCESS_FILE) {
+		t.Fatal(statErr)
+	}
+	after := socketInfoForTest(t, root)
+	t.Logf("directory mode before=%s after=%s; pathname stat=%v", before.Mode(), after.Mode(), statErr)
+	if err := verifySocket(before, after); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSocketFixtureAllowsOnlyRegularSocketTypeDrift(t *testing.T) {
+	root := t.TempDir()
+	verifySocket := createSocketFileForTest(t, filepath.Join(root, "socket"))
+	info := socketInfoWithoutIdentityForTest{socketInfoForTest(t, root)}
+	mode := info.Mode() &^ fs.ModeType
+	for _, types := range []struct {
+		name          string
+		before, after fs.FileMode
+	}{
+		{"regular-to-regular", 0, 0},
+		{"regular-to-socket", 0, fs.ModeSocket},
+		{"socket-to-regular", fs.ModeSocket, 0},
+		{"socket-to-socket", fs.ModeSocket, fs.ModeSocket},
+	} {
+		t.Run(types.name, func(t *testing.T) {
+			before := socketInfoWithModeForTest{FileInfo: info, mode: mode | types.before}
+			after := socketInfoWithModeForTest{FileInfo: info, mode: mode | types.after}
+			if err := verifySocket(before, after); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for _, foreign := range []fs.FileMode{fs.ModeDir, fs.ModeSymlink, fs.ModeNamedPipe, fs.ModeDevice, fs.ModeCharDevice, fs.ModeIrregular, fs.ModeSocket | fs.ModeSymlink} {
+		t.Run(foreign.String(), func(t *testing.T) {
+			socket := socketInfoWithModeForTest{FileInfo: info, mode: mode | fs.ModeSocket}
+			other := socketInfoWithModeForTest{FileInfo: info, mode: mode | foreign}
+			for _, pair := range [][2]fs.FileInfo{{socket, other}, {other, socket}, {other, other}} {
+				if err := verifySocket(pair[0], pair[1]); err == nil {
+					t.Fatalf("socket verifier accepted foreign mode before=%s after=%s", pair[0].Mode(), pair[1].Mode())
+				}
+			}
+		})
+	}
+}
+
 type socketInfoWithoutIdentityForTest struct{ fs.FileInfo }
 
 type socketInfoWithModeForTest struct {
@@ -168,8 +224,13 @@ func createSocketFixtureForTest(t *testing.T, path string) (windows.Handle, func
 		}
 		// SameFile may lazily reopen directory entries on Windows, which can
 		// fail for an unchanged AF_UNIX reparse point. The retained handle pins
-		// the entry instead; its native tag and enumerated mode must remain.
-		if after.Mode() != before.Mode() {
+		// the entry instead, and the exact native tag above verifies its type.
+		// Directory attributes can refresh from regular to socket after a
+		// pathname stat. Allow only those reported types; all other mode bits
+		// must stay unchanged.
+		beforeMode := before.Mode() &^ fs.ModeSocket
+		afterMode := after.Mode() &^ fs.ModeSocket
+		if !beforeMode.IsRegular() || !afterMode.IsRegular() || afterMode != beforeMode {
 			return fmt.Errorf("rejected special file mode = %s, before = %s", after.Mode(), before.Mode())
 		}
 		return nil
