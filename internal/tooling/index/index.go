@@ -77,13 +77,25 @@ type WorkspaceIndex struct {
 	ProjectRootPath string
 
 	sourcesByURI    map[string]string
-	namespaceByURI  map[string]*NamespaceInfo
+	namespaceByURI  map[string][]namespaceContext
+	emittedByURI    map[string]map[string]emittedBinding
 	generationByURI map[string]generationDocument
+}
+
+// emittedBinding records collision-only names without making generated or type
+// declarations available as rename targets. Protected type names cannot be referred.
+type emittedBinding struct {
+	protected bool
 }
 
 type generationDocument struct {
 	source *project.GenerationSource
 	name   string
+}
+
+type namespaceContext struct {
+	start Position
+	info  *NamespaceInfo
 }
 
 type BuildOptions struct {
@@ -119,7 +131,8 @@ func BuildWorkspaceIndex(opts BuildOptions) (*WorkspaceIndex, error) {
 		BuiltinSymbols:  make(map[string]struct{}),
 		ProjectRootPath: absRoot,
 		sourcesByURI:    make(map[string]string),
-		namespaceByURI:  make(map[string]*NamespaceInfo),
+		namespaceByURI:  make(map[string][]namespaceContext),
+		emittedByURI:    make(map[string]map[string]emittedBinding),
 		generationByURI: make(map[string]generationDocument),
 	}
 
@@ -417,12 +430,82 @@ func (i *WorkspaceIndex) ResolveDefinition(currentNS, symbol string) (SymbolDef,
 	return SymbolDef{}, false
 }
 
+// HasGlobalBinding also sees globals emitted by core declaration forms, which
+// must prevent rename collisions even when they have no editable SymbolDef.
+func (i *WorkspaceIndex) HasGlobalBinding(currentNS, symbol string) bool {
+	if _, found := i.ResolveDefinition(currentNS, symbol); found {
+		return true
+	}
+	info := i.NamespaceInfo(currentNS)
+	if strings.Contains(symbol, "/") {
+		ns, name := compiler.ParseQualifiedSymbol(symbol)
+		if info != nil {
+			if target, ok := info.Aliases[ns]; ok {
+				ns = target
+			}
+		}
+		return i.hasEmittedBinding(ns, name, false)
+	}
+	if i.hasEmittedBinding(currentNS, symbol, false) {
+		return true
+	}
+	if info != nil {
+		if ns, found := info.Refers[symbol]; found && i.hasEmittedBinding(ns, symbol, true) {
+			return true
+		}
+		for _, ns := range info.ReferAll {
+			if i.hasEmittedBinding(ns, symbol, true) {
+				return true
+			}
+		}
+		if _, excluded := info.Exclude[symbol]; excluded {
+			return false
+		}
+	}
+	return i.hasEmittedBinding(compiler.CoreNamespace, symbol, true) ||
+		i.hasEmittedBinding(compiler.StdlibCoreNamespace, symbol, true)
+}
+
+func (i *WorkspaceIndex) hasEmittedBinding(ns, name string, referred bool) bool {
+	qualified := compiler.QualifySymbol(ns, name)
+	for _, bindings := range i.emittedByURI {
+		if binding, found := bindings[qualified]; found && (!referred || !binding.protected) {
+			return true
+		}
+	}
+	return false
+}
+
 func (i *WorkspaceIndex) NamespaceForURI(uri string) string {
 	uri = NormalizeURI(uri)
 	if ns, ok := i.NamespaceByURI[uri]; ok && ns != "" {
 		return ns
 	}
 	return compiler.DefaultNamespace
+}
+
+// NamespaceAtPosition returns the namespace active at a 1-based UTF-16 position.
+func (i *WorkspaceIndex) NamespaceAtPosition(uri string, position Position) string {
+	ns := compiler.DefaultNamespace
+	for _, context := range i.namespaceByURI[NormalizeURI(uri)] {
+		if context.start.Line > position.Line || (context.start.Line == position.Line && context.start.Column > position.Column) {
+			break
+		}
+		ns = context.info.Name
+	}
+	return ns
+}
+
+// NamespacesForURI includes each namespace that can provide reference spellings
+// in the document, including forms preceding its first namespace declaration.
+func (i *WorkspaceIndex) NamespacesForURI(uri string) []string {
+	names := []string{compiler.DefaultNamespace}
+	for _, context := range i.namespaceByURI[NormalizeURI(uri)] {
+		if !containsString(names, context.info.Name) {
+			names = append(names, context.info.Name)
+		}
+	}
+	return names
 }
 
 // IsGenerationDocument identifies immutable retained dependency documents.
@@ -505,10 +588,11 @@ func matchesWorkspaceQuery(def SymbolDef, needle string) bool {
 
 type indexedDocument struct {
 	Namespace string
-	Meta      *NamespaceInfo
+	Meta      []namespaceContext
 	Defs      []SymbolDef
 	Symbols   []DocumentSymbol
 	Docs      map[string]string
+	Emitted   map[string]emittedBinding
 }
 
 func parseIndexedDocument(uri, source string) *indexedDocument {
@@ -523,6 +607,7 @@ func parseIndexedDocument(uri, source string) *indexedDocument {
 		Defs:      make([]SymbolDef, 0),
 		Symbols:   make([]DocumentSymbol, 0),
 		Docs:      make(map[string]string),
+		Emitted:   make(map[string]emittedBinding),
 	}
 	currentNS := compiler.DefaultNamespace
 	fileNamespace := ""
@@ -548,7 +633,10 @@ func parseIndexedDocument(uri, source string) *indexedDocument {
 			fileNamespace = nsName
 			if nsInfo != nil {
 				nsInfo.URI = uri
-				doc.Meta = nsInfo
+				doc.Meta = append(doc.Meta, namespaceContext{
+					start: PositionFromOffset(source, parsed.Forms[formIndex].StartOffset),
+					info:  nsInfo,
+				})
 			}
 		case "def", "defn", "defmacro", "defonce":
 			if len(list.Items) < 2 {
@@ -588,8 +676,60 @@ func parseIndexedDocument(uri, source string) *indexedDocument {
 	if fileNamespace != "" {
 		doc.Namespace = fileNamespace
 	}
+	emittedNS := compiler.DefaultNamespace
+	for _, form := range forms {
+		emittedNS = collectEmittedBindings(form, emittedNS, doc.Emitted)
+	}
 
 	return doc
+}
+
+// Only explicit declaration forms and do grouping contribute bindings. In
+// particular quote, metadata data, fields, and method parameters are not walked.
+func collectEmittedBindings(form types.Value, currentNS string, bindings map[string]emittedBinding) string {
+	list, ok := form.(*coll.List)
+	if !ok || len(list.Items) == 0 {
+		return currentNS
+	}
+	head, _ := types.SymbolName(list.Items[0])
+	switch head {
+	case "ns":
+		if ns, _ := parseNamespaceDecl(list); ns != "" {
+			return ns
+		}
+	case "do":
+		for _, item := range list.Items[1:] {
+			currentNS = collectEmittedBindings(item, currentNS, bindings)
+		}
+	case "defrecord", "deftype", "defprotocol":
+		if len(list.Items) < 2 || (head != "defprotocol" && len(list.Items) < 3) {
+			return currentNS
+		}
+		name, ok := types.SymbolName(list.Items[1])
+		if !ok || name == "" {
+			return currentNS
+		}
+		add := func(name string, protected bool) {
+			bindings[compiler.QualifySymbol(currentNS, name)] = emittedBinding{protected: protected}
+		}
+		if head == "defprotocol" {
+			add(name, false)
+			for _, item := range list.Items[2:] {
+				if method, ok := item.(*coll.List); ok && len(method.Items) > 0 {
+					if name, ok := types.SymbolName(method.Items[0]); ok && name != "" {
+						add(name, false)
+					}
+				}
+			}
+		} else {
+			add(name, true)
+			add("->"+name, false)
+			if head == "defrecord" {
+				add("map->"+name, false)
+			}
+		}
+	}
+	return currentNS
 }
 
 func (i *WorkspaceIndex) addDocument(uri string, doc *indexedDocument) {
@@ -600,8 +740,12 @@ func (i *WorkspaceIndex) addDocument(uri string, doc *indexedDocument) {
 	if doc.Namespace != "" {
 		i.NamespaceByURI[uri] = doc.Namespace
 	}
-	if doc.Meta != nil {
-		i.namespaceByURI[uri] = cloneNamespaceInfo(doc.Meta)
+	i.emittedByURI[uri] = doc.Emitted
+	for _, context := range doc.Meta {
+		i.namespaceByURI[uri] = append(i.namespaceByURI[uri], namespaceContext{
+			start: context.start,
+			info:  cloneNamespaceInfo(context.info),
+		})
 	}
 	if len(doc.Symbols) > 0 {
 		i.DocumentByURI[uri] = append([]DocumentSymbol(nil), doc.Symbols...)
@@ -636,6 +780,7 @@ func (i *WorkspaceIndex) addDocument(uri string, doc *indexedDocument) {
 func (i *WorkspaceIndex) removeURI(uri string) {
 	delete(i.NamespaceByURI, uri)
 	delete(i.namespaceByURI, uri)
+	delete(i.emittedByURI, uri)
 	delete(i.DocumentByURI, uri)
 
 	if symbols, ok := i.SymbolsByURI[uri]; ok {
@@ -666,20 +811,15 @@ func (i *WorkspaceIndex) rebuildNamespaces() {
 	}
 	sort.Strings(uris)
 	for _, uri := range uris {
-		meta := i.namespaceByURI[uri]
-		if meta == nil {
-			continue
+		for _, context := range i.namespaceByURI[uri] {
+			meta := context.info
+			if meta == nil || meta.Name == "" {
+				continue
+			}
+			dst := i.getOrCreateNamespace(meta.Name)
+			dst.URI = uri
+			mergeNamespaceInfo(dst, meta)
 		}
-		nsName := meta.Name
-		if nsName == "" {
-			nsName = i.NamespaceByURI[uri]
-		}
-		if nsName == "" {
-			continue
-		}
-		dst := i.getOrCreateNamespace(nsName)
-		dst.URI = uri
-		mergeNamespaceInfo(dst, meta)
 	}
 }
 
