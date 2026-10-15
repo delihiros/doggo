@@ -701,6 +701,12 @@ func collectEmittedBindings(form types.Value, currentNS string, bindings map[str
 		for _, item := range list.Items[1:] {
 			currentNS = collectEmittedBindings(item, currentNS, bindings)
 		}
+	case "def", "defonce", "defn", "defmacro":
+		if len(list.Items) >= 2 {
+			if name, ok := types.SymbolName(list.Items[1]); ok && name != "" {
+				bindings[compiler.QualifySymbol(currentNS, name)] = emittedBinding{}
+			}
+		}
 	case "defrecord", "deftype", "defprotocol":
 		if len(list.Items) < 2 || (head != "defprotocol" && len(list.Items) < 3) {
 			return currentNS

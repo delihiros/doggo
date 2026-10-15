@@ -401,6 +401,8 @@ func TestRenameCoreDestinationAcrossReferredDocuments(t *testing.T) {
 		{"record constructor", "(defrecord Box [])", "->Box", false, false},
 		{"record map constructor", "(defrecord Box [])", "map->Box", false, false},
 		{"protocol method", "(defprotocol Probe (renamed [this]))", "renamed", false, false},
+		{"do def", "(do (def renamed 2))", "renamed", false, false},
+		{"do defn", "(do (defn renamed [] 2))", "renamed", false, false},
 		{"qualified protocol method", "(defprotocol Probe (renamed [this]))", "renamed", false, true},
 	} {
 		for _, importOption := range []string{":refer [" + tc.newName + "]", ":refer :all"} {
@@ -451,5 +453,56 @@ func TestRenameCoreDestinationAcrossReferredDocuments(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestRenameDoGlobalDestinationRejectsAtomically(t *testing.T) {
+	for _, body := range []string{
+		"(do (def renamed 2))",
+		"(do (defn renamed [] 2))",
+		"(do (defmacro renamed [] 2))",
+		"(do (do (def renamed 2)))",
+		"(do (def ^:probe renamed 2))",
+	} {
+		t.Run(body, func(t *testing.T) {
+			source := "(ns demo)\n(def target 7)\n" + body + "\ntarget\n"
+			if before := runRenameTestSource(t, source); before != "7" {
+				t.Fatalf("fresh VM before = %s, want 7", before)
+			}
+			actual, response := renameTestSource(t, source, 1, 5)
+			if _, rejected := response["error"]; !rejected {
+				t.Fatalf("do global destination accepted: %v; source = %q", response, actual)
+			}
+			if _, partial := response["result"]; partial || actual != source {
+				t.Fatalf("do global destination returned partial edits: %v", response)
+			}
+		})
+	}
+}
+
+func TestRenameDoDestinationIgnoresUnrelatedAndLiteralNames(t *testing.T) {
+	for _, body := range []string{
+		"(ns other)\n(do (def renamed 2))\n(ns demo)",
+		"'(do (def renamed 2))",
+		"(do '(def renamed 2))",
+		"(do (do (def unrelated 2)))",
+		"(do (def ^{:probe (def renamed 2)} unrelated 3))",
+		"(do (defn unrelated [renamed] renamed))",
+		"(defprotocol Probe (read-val [this renamed]))\n(defrecord Box [] Probe (read-val [this renamed] renamed))",
+	} {
+		t.Run(body, func(t *testing.T) {
+			source := "(ns demo)\n(def target 7)\n" + body + "\ntarget\n"
+			if before := runRenameTestSource(t, source); before != "7" {
+				t.Fatalf("fresh VM before = %s, want 7", before)
+			}
+			actual, response := renameTestSource(t, source, 1, 5)
+			want := "(ns demo)\n(def renamed 7)\n" + body + "\nrenamed\n"
+			if actual != want {
+				t.Fatalf("unrelated/literal do name rejected or changed: %q, want %q; response = %v", actual, want, response)
+			}
+			if after := runRenameTestSource(t, actual); after != "7" {
+				t.Fatalf("fresh VM after = %s, want 7", after)
+			}
+		})
 	}
 }

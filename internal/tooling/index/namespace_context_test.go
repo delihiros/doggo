@@ -109,3 +109,42 @@ func TestCoreEmittedBindingsOnlyPreventDestinationCollisions(t *testing.T) {
 		t.Fatal("document removal retained emitted bindings")
 	}
 }
+
+func TestDoOrdinaryDeclarationsOnlyPreventDestinationCollisions(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.dog")
+	uri := PathToFileURI(path)
+	source := `(ns demo)
+(do (def value 2) (defonce once 3) (defn read-value [parameter] parameter)
+    (defmacro read-form [] 5) (do (def nested 6))
+    '(def quoted 7) (def ^{:probe (def metadata-only 8)} unrelated 9))
+(ns other)
+(do (def elsewhere 10))
+`
+	idx, err := BuildWorkspaceIndex(BuildOptions{ProjectRoot: root, Overlay: map[string]string{path: source}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"value", "once", "read-value", "read-form", "nested", "unrelated"} {
+		if !idx.HasGlobalBinding("demo", name) {
+			t.Errorf("do declaration %s missing from collision bindings", name)
+		}
+		if def, found := idx.ResolveDefinition("demo", name); found {
+			t.Errorf("do declaration became a rename target: %+v", def)
+		}
+	}
+	for _, name := range []string{"parameter", "quoted", "metadata-only", "elsewhere"} {
+		if idx.HasGlobalBinding("demo", name) {
+			t.Errorf("unrelated/literal name %s became a collision binding", name)
+		}
+	}
+	if !idx.HasGlobalBinding("other", "elsewhere") {
+		t.Error("other namespace do declaration missing from collision bindings")
+	}
+	if err := idx.IndexDocument(uri, "(ns demo)\n2\n"); err != nil {
+		t.Fatal(err)
+	}
+	if idx.HasGlobalBinding("demo", "value") || idx.HasGlobalBinding("other", "elsewhere") {
+		t.Fatal("document replacement retained do collision bindings")
+	}
+}
