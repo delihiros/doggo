@@ -541,10 +541,14 @@ func generateInteropFileRoot(root *os.Root, projectRoot, output, outputRel strin
 	if isolated {
 		filteredEnv = append(filteredEnv, "GOWORK=off")
 	}
+	loadDir, err := packageLoadDir(projectRoot, filteredEnv)
+	if err != nil {
+		return err
+	}
 
 	cfg := &packages.Config{
 		Mode:       packages.NeedName | packages.NeedTypes | packages.NeedTypesSizes,
-		Dir:        projectRoot,
+		Dir:        loadDir,
 		Env:        filteredEnv,
 		Tests:      false,
 		BuildFlags: moduleBuildFlags(isolated),
@@ -885,9 +889,13 @@ func generateReifyFileRoot(root *os.Root, moduleRoot, output, outputRel string, 
 		}
 		env = append(filteredEnv, "GOWORK=off")
 	}
+	loadDir, err := packageLoadDir(moduleRoot, env)
+	if err != nil {
+		return nil, err
+	}
 	cfg := &packages.Config{
 		Mode:       packages.NeedName | packages.NeedTypes | packages.NeedTypesSizes,
-		Dir:        moduleRoot,
+		Dir:        loadDir,
 		Env:        env,
 		Tests:      false,
 		BuildFlags: moduleBuildFlags(isolated),
@@ -1165,14 +1173,21 @@ func validateGeneratedPackage(moduleRoot, output string, source []byte, isolated
 		}
 		env = append(filtered, "GOWORK=off")
 	}
+	loadDir, err := packageLoadDir(moduleRoot, env)
+	if err != nil {
+		return err
+	}
+	// The overlay must use the same spelling as Go's workspace module root.
+	// Compiled file ownership is still compared using canonical paths below.
+	loadOutput := filepath.Join(loadDir, dirRel, filepath.Base(output))
 	pkgs, loadErr := packages.Load(&packages.Config{
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
 			packages.NeedImports | packages.NeedDeps | packages.NeedTypes | packages.NeedTypesSizes,
-		Dir:        moduleRoot,
+		Dir:        loadDir,
 		Env:        env,
 		Tests:      false,
 		BuildFlags: moduleBuildFlags(isolated),
-		Overlay:    map[string][]byte{output: source},
+		Overlay:    map[string][]byte{loadOutput: source},
 	}, pattern)
 	var diagnostics []string
 	if loadErr != nil {
