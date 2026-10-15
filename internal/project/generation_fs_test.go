@@ -63,25 +63,10 @@ func TestSyncTreeRejectsSpecialFiles(t *testing.T) {
 	root := t.TempDir()
 	socketPath := filepath.Join(root, "socket")
 	verifySocket := createSocketFileForTest(t, socketPath)
-	verifySocket()
-	// Directory enumeration preserves socket identity even when Windows refuses
-	// to open the socket reparse point itself for Lstat.
-	socketInfo := func() fs.FileInfo {
-		directory, err := os.Open(root)
-		if err != nil {
-			t.Fatal(err)
-		}
-		entries, readErr := directory.Readdir(-1)
-		closeErr := directory.Close()
-		if readErr != nil || closeErr != nil {
-			t.Fatalf("read special-file fixture directory: %v", errors.Join(readErr, closeErr))
-		}
-		if len(entries) != 1 || entries[0].Name() != "socket" {
-			t.Fatalf("special-file fixture entries = %v, want only socket", entries)
-		}
-		return entries[0]
+	before := socketInfoForTest(t, root)
+	if err := verifySocket(before, before); err != nil {
+		t.Fatal(err)
 	}
-	before := socketInfo()
 	err := SyncTree(root)
 	var pathErr *os.PathError
 	windowsSocketRejected := runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(1920)) && // ERROR_CANT_ACCESS_FILE
@@ -89,11 +74,29 @@ func TestSyncTreeRejectsSpecialFiles(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "special") && !windowsSocketRejected {
 		t.Fatalf("SyncTree error = %v, want special-file rejection", err)
 	}
-	after := socketInfo()
-	if !os.SameFile(before, after) || after.Mode() != before.Mode() {
-		t.Fatal("rejected special file changed")
+	after := socketInfoForTest(t, root)
+	if err := verifySocket(before, after); err != nil {
+		t.Fatal(err)
 	}
-	verifySocket()
+}
+
+// Directory enumeration reads the socket mode even when Windows refuses to
+// reopen its reparse point. Identity is verified by the platform's fixture.
+func socketInfoForTest(t *testing.T, root string) fs.FileInfo {
+	t.Helper()
+	directory, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, readErr := directory.Readdir(-1)
+	closeErr := directory.Close()
+	if readErr != nil || closeErr != nil {
+		t.Fatalf("read special-file fixture directory: %v", errors.Join(readErr, closeErr))
+	}
+	if len(entries) != 1 || entries[0].Name() != "socket" {
+		t.Fatalf("special-file fixture entries = %v, want only socket", entries)
+	}
+	return entries[0]
 }
 
 func TestPublishDirectoryRenamesWithinGenerations(t *testing.T) {
