@@ -32,7 +32,7 @@ import (
 	"reflect"
 {{- range .Pkgs }}
 	{{- if ne .PkgPath "reflect" }}
-	"{{ .PkgPath }}"
+	{{ .Name }} "{{ .PkgPath }}"
 	{{- end }}
 {{- end }}
 )
@@ -108,6 +108,21 @@ type importSet struct {
 	byPath     map[string]ImportInfo
 	pathByName map[string]string
 	fixed      map[string]struct{}
+}
+
+func newInteropImportSet() *importSet {
+	imports := &importSet{
+		byPath:     map[string]ImportInfo{"reflect": {Alias: "reflect", Path: "reflect"}},
+		pathByName: map[string]string{"reflect": "reflect"},
+		fixed:      map[string]struct{}{"reflect": {}},
+	}
+	for _, name := range types.Universe.Names() {
+		imports.reserve(name)
+	}
+	for _, name := range []string{"RegisterPackage", "init"} {
+		imports.reserve(name)
+	}
+	return imports
 }
 
 func newImportSet() *importSet {
@@ -556,10 +571,19 @@ func generateInteropFileRoot(root *os.Root, projectRoot, output, outputRel strin
 		}
 	}
 
+	// Allocate aliases in path order so query order cannot change the registry.
+	sort.Slice(pkgs, func(i, j int) bool { return pkgs[i].PkgPath < pkgs[j].PkgPath })
+	imports := newInteropImportSet()
+	seen := make(map[string]bool, len(pkgs))
 	var data []PkgData
 	for _, pkg := range pkgs {
+		if seen[pkg.PkgPath] {
+			continue
+		}
+		seen[pkg.PkgPath] = true
+		alias := imports.add(pkg.PkgPath, pkg.Name)
 		pData := PkgData{
-			Name:    pkg.Name,
+			Name:    alias,
 			PkgPath: pkg.PkgPath,
 		}
 
@@ -579,7 +603,7 @@ func generateInteropFileRoot(root *os.Root, projectRoot, output, outputRel strin
 				case *types.Struct, *types.Interface:
 					pData.Exports = append(pData.Exports, ExportData{
 						Name:    name,
-						PkgName: pkg.Name,
+						PkgName: alias,
 						IsType:  true,
 					})
 				case *types.Basic:
@@ -589,7 +613,7 @@ func generateInteropFileRoot(root *os.Root, projectRoot, output, outputRel strin
 						}
 						pData.Exports = append(pData.Exports, ExportData{
 							Name:    name,
-							PkgName: pkg.Name,
+							PkgName: alias,
 							IsType:  true,
 						})
 					}
@@ -605,13 +629,13 @@ func generateInteropFileRoot(root *os.Root, projectRoot, output, outputRel strin
 				}
 				pData.Exports = append(pData.Exports, ExportData{
 					Name:    name,
-					PkgName: pkg.Name,
+					PkgName: alias,
 					IsType:  false,
 				})
 			case *types.Var:
 				pData.Exports = append(pData.Exports, ExportData{
 					Name:    name,
-					PkgName: pkg.Name,
+					PkgName: alias,
 					IsType:  false,
 				})
 			case *types.Const:
@@ -620,7 +644,7 @@ func generateInteropFileRoot(root *os.Root, projectRoot, output, outputRel strin
 				}
 				pData.Exports = append(pData.Exports, ExportData{
 					Name:    name,
-					PkgName: pkg.Name,
+					PkgName: alias,
 					IsType:  false,
 				})
 			}

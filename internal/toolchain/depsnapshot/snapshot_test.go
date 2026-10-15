@@ -487,10 +487,10 @@ func TestSnapshotDependenciesRejectsSymlinkedSourceAncestor(t *testing.T) {
 func TestSnapshotDependenciesKeepsOpenedSourceAncestryDuringReplacement(t *testing.T) {
 	root := t.TempDir()
 	originalOuter := filepath.Join(root, "outer")
-	writeFile(t, filepath.Join(originalOuter, "inner", "dep", "go.mod"), "module example.com/original\n\nreplace example.com/child => ../child\n")
+	writeFile(t, filepath.Join(originalOuter, "inner", "dep", "go.mod"), "module example.com/original\n\nreplace example.com/original-child => ../child\n")
 	writeFile(t, filepath.Join(originalOuter, "inner", "child", "go.mod"), "module example.com/original-child\n")
 	outside := t.TempDir()
-	writeFile(t, filepath.Join(outside, "inner", "dep", "go.mod"), "module example.com/outside\n\nreplace example.com/child => ../child\n")
+	writeFile(t, filepath.Join(outside, "inner", "dep", "go.mod"), "module example.com/outside\n\nreplace example.com/outside-child => ../child\n")
 	writeFile(t, filepath.Join(outside, "inner", "child", "go.mod"), "module example.com/outside-child\n")
 
 	swapped := false
