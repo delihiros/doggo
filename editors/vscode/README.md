@@ -3,6 +3,22 @@
 Doggo extension for Visual Studio Code.
 It launches `doggo exec -- lsp` for `*.dog` files and provides REPL execution helpers.
 
+## Compatibility policy
+
+The extension supports VS Code 1.90.0 and later in the 1.x series. Keep
+`vscode-languageclient` on 9.x while that floor is supported: client 10.1.2
+requires VS Code 1.91.0 and rejects older hosts at runtime. Compile against an
+exact `@types/vscode` version from the 1.90.x API line, so newer editor APIs
+cannot accidentally enter the extension.
+
+`npm run verify:compatibility` checks the locked runtime dependencies against
+the entire declared editor range and checks the API types pin. Compilation and
+bundling run this check, including during VSIX packaging. Dependabot continues
+to propose language-client patch/minor updates and VS Code types patch updates;
+major client upgrades and newer API lines require a deliberate migration.
+See [the dependency review](DEPENDENCY_REVIEW.md) for tradeoffs and validation
+limits. These metadata and compilation checks do not replace editor-host tests.
+
 ## Features
 
 1. LSP integration via stdio (`doggo exec -- lsp`)
