@@ -410,6 +410,13 @@ func (vm *VM) Run() error {
 		case opcode.OpDup:
 			err = vm.push(vm.stack[vm.sp-1])
 
+		case opcode.OpDropBelow:
+			keep := int(opcode.ReadUint16(ins[ip+1:]))
+			drop := int(opcode.ReadUint16(ins[ip+3:]))
+			frame.ip += 4
+			copy(vm.stack[vm.sp-keep-drop:], vm.stack[vm.sp-keep:vm.sp])
+			vm.sp -= drop
+
 		// 算術演算
 		case opcode.OpAdd, opcode.OpSub, opcode.OpMul, opcode.OpDiv, opcode.OpMod:
 			err = vm.executeBinaryOperation(op)
@@ -483,6 +490,11 @@ func (vm *VM) Run() error {
 			// Cell は unwrap しない（クロージャキャプチャで Cell 自体を捕捉するため）
 			// executeCall で Cell は unwrap される
 			err = vm.push(vm.stack[frame.basePointer+int(localIndex)])
+
+		case opcode.OpInitLocal:
+			localIndex := opcode.ReadUint8(ins[ip+1:])
+			frame.ip += 1
+			vm.stack[frame.basePointer+int(localIndex)] = vm.pop()
 
 		case opcode.OpSetLocal:
 			localIndex := opcode.ReadUint8(ins[ip+1:])

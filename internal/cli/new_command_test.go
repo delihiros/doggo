@@ -97,6 +97,10 @@ func TestApp_Run_NewCreatesProject(t *testing.T) {
 	if err := os.Chdir(tmp); err != nil {
 		t.Fatalf("chdir: %v", err)
 	}
+	tmp, err = os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	app := NewApp("1.0.0", []string{"new", "app", "my-app"})
 	output := captureCLIStdout(t, func() {
@@ -135,6 +139,10 @@ func TestApp_Run_NewDryRunReportsOnlyPlannedFiles(t *testing.T) {
 	defer os.Chdir(oldWD)
 	if err := os.Chdir(tmp); err != nil {
 		t.Fatalf("chdir: %v", err)
+	}
+	tmp, err = os.Getwd()
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	app := NewApp("1.0.0", []string{"new", "app", "demo", "--dry-run"})
