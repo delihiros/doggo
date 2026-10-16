@@ -21,7 +21,7 @@ func TestDocAndSourceHelpersReturnMetadataAndDefinitionForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doc* failed: %v", err)
 	}
-	docText := docResult.String()
+	docText := mustString(t, docResult)
 	if !strings.Contains(docText, "my.app/my-fn") {
 		t.Fatalf("expected fully-qualified symbol in doc output, got %s", docText)
 	}
@@ -36,7 +36,7 @@ func TestDocAndSourceHelpersReturnMetadataAndDefinitionForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("source-str* failed: %v", err)
 	}
-	sourceText := sourceResult.String()
+	sourceText := mustString(t, sourceResult)
 	if !strings.Contains(sourceText, `(def ^{:doc "double value"} my-fn (fn [x] (* x 2)))`) {
 		t.Fatalf("expected full definition form in source output, got %s", sourceText)
 	}
@@ -49,8 +49,8 @@ func TestSourceHelperReportsUnavailableWhenSourceCannotBeResolved(t *testing.T) 
 	if err != nil {
 		t.Fatalf("source-str* failed: %v", err)
 	}
-	if !strings.Contains(result.String(), "unavailable") {
-		t.Fatalf("expected unavailable message, got %s", result.String())
+	if !strings.Contains(mustString(t, result), "unavailable") {
+		t.Fatalf("expected unavailable message, got %s", mustString(t, result))
 	}
 }
 
@@ -67,24 +67,24 @@ func TestDocAndSourceHelpersSupportMacrosAndQualifiedBuiltins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doc* for builtin failed: %v", err)
 	}
-	if !strings.Contains(docResult.String(), "doggo.core/map") {
-		t.Fatalf("expected qualified builtin name in doc output, got %s", docResult.String())
+	if !strings.Contains(mustString(t, docResult), "doggo.core/map") {
+		t.Fatalf("expected qualified builtin name in doc output, got %s", mustString(t, docResult))
 	}
 
 	macroDoc, err := runner.Run(`(doc* 'my.app/helper)`)
 	if err != nil {
 		t.Fatalf("doc* for macro failed: %v", err)
 	}
-	if !strings.Contains(macroDoc.String(), "my.app/helper") || !strings.Contains(macroDoc.String(), "macro docs") {
-		t.Fatalf("expected macro doc output, got %s", macroDoc.String())
+	if !strings.Contains(mustString(t, macroDoc), "my.app/helper") || !strings.Contains(mustString(t, macroDoc), "macro docs") {
+		t.Fatalf("expected macro doc output, got %s", mustString(t, macroDoc))
 	}
 
 	macroSource, err := runner.Run(`(source-str* 'my.app/helper)`)
 	if err != nil {
 		t.Fatalf("source-str* for macro failed: %v", err)
 	}
-	if !strings.Contains(macroSource.String(), `(defmacro helper "macro docs" [] 1)`) {
-		t.Fatalf("expected macro source output, got %s", macroSource.String())
+	if !strings.Contains(mustString(t, macroSource), `(defmacro helper "macro docs" [] 1)`) {
+		t.Fatalf("expected macro source output, got %s", mustString(t, macroSource))
 	}
 }
 
@@ -101,19 +101,19 @@ func TestDocAndSourceHelpersPreferMacrosOverBuiltinsWithSameName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doc* failed: %v", err)
 	}
-	if !strings.Contains(docResult.String(), "my.app/map") || !strings.Contains(docResult.String(), "macro docs") {
-		t.Fatalf("expected macro to override builtin in doc output, got %s", docResult.String())
+	if !strings.Contains(mustString(t, docResult), "my.app/map") || !strings.Contains(mustString(t, docResult), "macro docs") {
+		t.Fatalf("expected macro to override builtin in doc output, got %s", mustString(t, docResult))
 	}
-	if strings.Contains(docResult.String(), "doggo.core/map") {
-		t.Fatalf("expected builtin doc to be hidden by macro, got %s", docResult.String())
+	if strings.Contains(mustString(t, docResult), "doggo.core/map") {
+		t.Fatalf("expected builtin doc to be hidden by macro, got %s", mustString(t, docResult))
 	}
 
 	sourceResult, err := runner.Run(`(source-str* 'map)`)
 	if err != nil {
 		t.Fatalf("source-str* failed: %v", err)
 	}
-	if !strings.Contains(sourceResult.String(), `(defmacro map "macro docs" [] 1)`) {
-		t.Fatalf("expected macro source output, got %s", sourceResult.String())
+	if !strings.Contains(mustString(t, sourceResult), `(defmacro map "macro docs" [] 1)`) {
+		t.Fatalf("expected macro source output, got %s", mustString(t, sourceResult))
 	}
 }
 
@@ -158,33 +158,33 @@ func TestDocAndSourceHelpersPreferVarsOverMacrosWithSameName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doc* failed: %v", err)
 	}
-	if strings.Contains(docResult.String(), "macro docs") {
-		t.Fatalf("expected var to shadow macro in doc output, got %s", docResult.String())
+	if strings.Contains(mustString(t, docResult), "macro docs") {
+		t.Fatalf("expected var to shadow macro in doc output, got %s", mustString(t, docResult))
 	}
-	if !strings.Contains(docResult.String(), "var docs") {
-		t.Fatalf("expected var doc output, got %s", docResult.String())
+	if !strings.Contains(mustString(t, docResult), "var docs") {
+		t.Fatalf("expected var doc output, got %s", mustString(t, docResult))
 	}
 
 	sourceResult, err := runner.Run(`(source-str* 'helper)`)
 	if err != nil {
 		t.Fatalf("source-str* failed: %v", err)
 	}
-	if strings.Contains(sourceResult.String(), "defmacro helper") {
-		t.Fatalf("expected var to shadow macro in source output, got %s", sourceResult.String())
+	if strings.Contains(mustString(t, sourceResult), "defmacro helper") {
+		t.Fatalf("expected var to shadow macro in source output, got %s", mustString(t, sourceResult))
 	}
-	if !strings.Contains(sourceResult.String(), `(def ^{:doc "var docs"} helper 2)`) {
-		t.Fatalf("expected var source output, got %s", sourceResult.String())
+	if !strings.Contains(mustString(t, sourceResult), `(def ^{:doc "var docs"} helper 2)`) {
+		t.Fatalf("expected var source output, got %s", mustString(t, sourceResult))
 	}
 
 	findDocResult, err := runner.Run(`(pr-str (find-doc* "var docs"))`)
 	if err != nil {
 		t.Fatalf("find-doc* failed: %v", err)
 	}
-	if !strings.Contains(findDocResult.String(), "my.app/helper") {
-		t.Fatalf("expected var doc entry, got %s", findDocResult.String())
+	if !strings.Contains(mustString(t, findDocResult), "my.app/helper") {
+		t.Fatalf("expected var doc entry, got %s", mustString(t, findDocResult))
 	}
-	if strings.Contains(findDocResult.String(), "macro docs") {
-		t.Fatalf("expected macro doc to be shadowed by var doc, got %s", findDocResult.String())
+	if strings.Contains(mustString(t, findDocResult), "macro docs") {
+		t.Fatalf("expected macro doc to be shadowed by var doc, got %s", mustString(t, findDocResult))
 	}
 }
 
@@ -202,19 +202,19 @@ func TestDocAndSourceHelpersPreferActiveMacroOverOlderVar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doc* failed: %v", err)
 	}
-	if !strings.Contains(docResult.String(), "macro docs") {
-		t.Fatalf("expected active macro doc output, got %s", docResult.String())
+	if !strings.Contains(mustString(t, docResult), "macro docs") {
+		t.Fatalf("expected active macro doc output, got %s", mustString(t, docResult))
 	}
-	if strings.Contains(docResult.String(), "var docs") {
-		t.Fatalf("expected older var docs to be replaced, got %s", docResult.String())
+	if strings.Contains(mustString(t, docResult), "var docs") {
+		t.Fatalf("expected older var docs to be replaced, got %s", mustString(t, docResult))
 	}
 
 	sourceResult, err := runner.Run(`(source-str* 'helper)`)
 	if err != nil {
 		t.Fatalf("source-str* failed: %v", err)
 	}
-	if !strings.Contains(sourceResult.String(), `(defmacro helper "macro docs" [] 1)`) {
-		t.Fatalf("expected active macro source output, got %s", sourceResult.String())
+	if !strings.Contains(mustString(t, sourceResult), `(defmacro helper "macro docs" [] 1)`) {
+		t.Fatalf("expected active macro source output, got %s", mustString(t, sourceResult))
 	}
 }
 
@@ -240,11 +240,11 @@ func TestDocHelpersUseSourceNamespaceForReferredVars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doc* failed: %v", err)
 	}
-	if !strings.Contains(result.String(), "lib/helper") {
-		t.Fatalf("expected referred var to retain source namespace, got %s", result.String())
+	if !strings.Contains(mustString(t, result), "lib/helper") {
+		t.Fatalf("expected referred var to retain source namespace, got %s", mustString(t, result))
 	}
-	if strings.Contains(result.String(), "user/helper") {
-		t.Fatalf("expected doc output to avoid refer alias namespace, got %s", result.String())
+	if strings.Contains(mustString(t, result), "user/helper") {
+		t.Fatalf("expected doc output to avoid refer alias namespace, got %s", mustString(t, result))
 	}
 }
 
@@ -271,14 +271,14 @@ func TestDocHelpersUseLocalMetadataAfterShadowingReferredVar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doc* failed: %v", err)
 	}
-	if !strings.Contains(result.String(), "user/helper") {
-		t.Fatalf("expected local def to replace refer provenance, got %s", result.String())
+	if !strings.Contains(mustString(t, result), "user/helper") {
+		t.Fatalf("expected local def to replace refer provenance, got %s", mustString(t, result))
 	}
-	if !strings.Contains(result.String(), "local docs") {
-		t.Fatalf("expected local def metadata to replace refer metadata, got %s", result.String())
+	if !strings.Contains(mustString(t, result), "local docs") {
+		t.Fatalf("expected local def metadata to replace refer metadata, got %s", mustString(t, result))
 	}
-	if strings.Contains(result.String(), "lib/helper") {
-		t.Fatalf("expected refer provenance to be cleared, got %s", result.String())
+	if strings.Contains(mustString(t, result), "lib/helper") {
+		t.Fatalf("expected refer provenance to be cleared, got %s", mustString(t, result))
 	}
 }
 
@@ -295,16 +295,16 @@ func TestDocAndSourceHelpersResolveUnqualifiedSymbolsInFunctionNamespace(t *test
 	if err != nil {
 		t.Fatalf("probe-doc failed: %v", err)
 	}
-	if !strings.Contains(result.String(), "my.docs/helper") {
-		t.Fatalf("expected lexical namespace resolution for doc*, got %s", result.String())
+	if !strings.Contains(mustString(t, result), "my.docs/helper") {
+		t.Fatalf("expected lexical namespace resolution for doc*, got %s", mustString(t, result))
 	}
 
 	sourceResult, err := runner.Run(`(my.docs/probe-source)`)
 	if err != nil {
 		t.Fatalf("probe-source failed: %v", err)
 	}
-	if !strings.Contains(sourceResult.String(), `(def ^{:doc "helper docs"} helper (fn [] 1))`) {
-		t.Fatalf("expected lexical namespace resolution for source-str*, got %s", sourceResult.String())
+	if !strings.Contains(mustString(t, sourceResult), `(def ^{:doc "helper docs"} helper (fn [] 1))`) {
+		t.Fatalf("expected lexical namespace resolution for source-str*, got %s", mustString(t, sourceResult))
 	}
 }
 
@@ -320,11 +320,11 @@ func TestSourceHelperPrefersNamedDefinitionOnSharedLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("source-str* failed: %v", err)
 	}
-	if !strings.Contains(sourceResult.String(), `(defmacro helper "macro docs" [] 1)`) {
-		t.Fatalf("expected exact defmacro form on shared line, got %s", sourceResult.String())
+	if !strings.Contains(mustString(t, sourceResult), `(defmacro helper "macro docs" [] 1)`) {
+		t.Fatalf("expected exact defmacro form on shared line, got %s", mustString(t, sourceResult))
 	}
-	if strings.Contains(sourceResult.String(), `(ns my.docs)`) {
-		t.Fatalf("expected source-str* to avoid earlier same-line form, got %s", sourceResult.String())
+	if strings.Contains(mustString(t, sourceResult), `(ns my.docs)`) {
+		t.Fatalf("expected source-str* to avoid earlier same-line form, got %s", mustString(t, sourceResult))
 	}
 }
 
@@ -340,11 +340,11 @@ func TestSourceHelperFindsNamedDefinitionInsideTopLevelDo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("source-str* failed: %v", err)
 	}
-	if !strings.Contains(sourceResult.String(), `(defmacro helper "macro docs" [] 1)`) {
-		t.Fatalf("expected source-str* to find nested top-level defmacro, got %s", sourceResult.String())
+	if !strings.Contains(mustString(t, sourceResult), `(defmacro helper "macro docs" [] 1)`) {
+		t.Fatalf("expected source-str* to find nested top-level defmacro, got %s", mustString(t, sourceResult))
 	}
-	if strings.Contains(sourceResult.String(), `(do (ns my.docs)`) {
-		t.Fatalf("expected source-str* to return the definition, not the enclosing do, got %s", sourceResult.String())
+	if strings.Contains(mustString(t, sourceResult), `(do (ns my.docs)`) {
+		t.Fatalf("expected source-str* to return the definition, not the enclosing do, got %s", mustString(t, sourceResult))
 	}
 }
 
@@ -361,11 +361,11 @@ func TestSourceHelperIgnoresQuotedDefinitionsOnSameLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("source-str* failed: %v", err)
 	}
-	if !strings.Contains(sourceResult.String(), `(defmacro helper "real" [] 1)`) {
-		t.Fatalf("expected source-str* to return the real definition, got %s", sourceResult.String())
+	if !strings.Contains(mustString(t, sourceResult), `(defmacro helper "real" [] 1)`) {
+		t.Fatalf("expected source-str* to return the real definition, got %s", mustString(t, sourceResult))
 	}
-	if strings.Contains(sourceResult.String(), `"quoted"`) {
-		t.Fatalf("expected source-str* to ignore quoted definition data, got %s", sourceResult.String())
+	if strings.Contains(mustString(t, sourceResult), `"quoted"`) {
+		t.Fatalf("expected source-str* to ignore quoted definition data, got %s", mustString(t, sourceResult))
 	}
 }
 
@@ -384,11 +384,11 @@ func TestSourceHelperReturnsDefinitionInsideConditional(t *testing.T) {
 	if err != nil {
 		t.Fatalf("source-str* failed: %v", err)
 	}
-	if !strings.Contains(sourceResult.String(), `(def helper (fn [] 1))`) {
-		t.Fatalf("expected source-str* to return the nested def, got %s", sourceResult.String())
+	if !strings.Contains(mustString(t, sourceResult), `(def helper (fn [] 1))`) {
+		t.Fatalf("expected source-str* to return the nested def, got %s", mustString(t, sourceResult))
 	}
-	if strings.Contains(sourceResult.String(), `(if true`) {
-		t.Fatalf("expected source-str* to avoid enclosing conditional, got %s", sourceResult.String())
+	if strings.Contains(mustString(t, sourceResult), `(if true`) {
+		t.Fatalf("expected source-str* to avoid enclosing conditional, got %s", mustString(t, sourceResult))
 	}
 }
 
@@ -409,11 +409,11 @@ func TestSourceHelperReturnsDefinitionCreatedInsideFunctionBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("source-str* failed: %v", err)
 	}
-	if !strings.Contains(sourceResult.String(), `(def helper (fn [] 1))`) {
-		t.Fatalf("expected source-str* to return the function-body def, got %s", sourceResult.String())
+	if !strings.Contains(mustString(t, sourceResult), `(def helper (fn [] 1))`) {
+		t.Fatalf("expected source-str* to return the function-body def, got %s", mustString(t, sourceResult))
 	}
-	if strings.Contains(sourceResult.String(), `(def trigger`) {
-		t.Fatalf("expected source-str* to avoid enclosing fn definition, got %s", sourceResult.String())
+	if strings.Contains(mustString(t, sourceResult), `(def trigger`) {
+		t.Fatalf("expected source-str* to avoid enclosing fn definition, got %s", mustString(t, sourceResult))
 	}
 }
 
@@ -432,11 +432,11 @@ func TestSourceHelperReturnsOriginalDefnSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("source-str* failed: %v", err)
 	}
-	if !strings.Contains(sourceResult.String(), "(defn alpha") {
-		t.Fatalf("expected source-str* to preserve original defn form, got %s", sourceResult.String())
+	if !strings.Contains(mustString(t, sourceResult), "(defn alpha") {
+		t.Fatalf("expected source-str* to preserve original defn form, got %s", mustString(t, sourceResult))
 	}
-	if strings.Contains(sourceResult.String(), "(def alpha (fn") {
-		t.Fatalf("expected source-str* to avoid macro-expanded def form, got %s", sourceResult.String())
+	if strings.Contains(mustString(t, sourceResult), "(def alpha (fn") {
+		t.Fatalf("expected source-str* to avoid macro-expanded def form, got %s", mustString(t, sourceResult))
 	}
 }
 
@@ -455,19 +455,19 @@ func TestSourceHelperReturnsOriginalMacroCallSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("source-str* failed: %v", err)
 	}
-	if !strings.Contains(sourceResult.String(), "(defconst answer 42)") {
-		t.Fatalf("expected source-str* to return original macro call, got %s", sourceResult.String())
+	if !strings.Contains(mustString(t, sourceResult), "(defconst answer 42)") {
+		t.Fatalf("expected source-str* to return original macro call, got %s", mustString(t, sourceResult))
 	}
-	if strings.Contains(sourceResult.String(), "(def answer 42)") {
-		t.Fatalf("expected source-str* to avoid expanded def form, got %s", sourceResult.String())
+	if strings.Contains(mustString(t, sourceResult), "(def answer 42)") {
+		t.Fatalf("expected source-str* to avoid expanded def form, got %s", mustString(t, sourceResult))
 	}
 
 	docResult, err := runner.Run(`(doc* 'answer)`)
 	if err != nil {
 		t.Fatalf("doc* failed: %v", err)
 	}
-	if !strings.Contains(docResult.String(), "src/defconst_source.dog:4:1") {
-		t.Fatalf("expected macro-generated definition to keep its source span, got %s", docResult.String())
+	if !strings.Contains(mustString(t, docResult), "src/defconst_source.dog:4:1") {
+		t.Fatalf("expected macro-generated definition to keep its source span, got %s", mustString(t, docResult))
 	}
 }
 
@@ -488,11 +488,11 @@ func TestSourceHelperPreservesOutermostMacroCallAcrossNestedExpansion(t *testing
 	if err != nil {
 		t.Fatalf("source-str* failed: %v", err)
 	}
-	if !strings.Contains(sourceResult.String(), "(outer answer 42)") {
-		t.Fatalf("expected source-str* to keep outermost macro call, got %s", sourceResult.String())
+	if !strings.Contains(mustString(t, sourceResult), "(outer answer 42)") {
+		t.Fatalf("expected source-str* to keep outermost macro call, got %s", mustString(t, sourceResult))
 	}
-	if strings.Contains(sourceResult.String(), "(inner answer 42)") || strings.Contains(sourceResult.String(), "(def answer 42)") {
-		t.Fatalf("expected source-str* to avoid synthetic nested expansion forms, got %s", sourceResult.String())
+	if strings.Contains(mustString(t, sourceResult), "(inner answer 42)") || strings.Contains(mustString(t, sourceResult), "(def answer 42)") {
+		t.Fatalf("expected source-str* to avoid synthetic nested expansion forms, got %s", mustString(t, sourceResult))
 	}
 }
 
@@ -510,11 +510,11 @@ func TestSourceHelperPreservesOutermostMacroCallForPassthroughMacro(t *testing.T
 	if err != nil {
 		t.Fatalf("source-str* failed: %v", err)
 	}
-	if !strings.Contains(sourceResult.String(), "(passthrough (def answer 42))") {
-		t.Fatalf("expected source-str* to preserve outermost macro call, got %s", sourceResult.String())
+	if !strings.Contains(mustString(t, sourceResult), "(passthrough (def answer 42))") {
+		t.Fatalf("expected source-str* to preserve outermost macro call, got %s", mustString(t, sourceResult))
 	}
-	if sourceResult.String() == "\"(def answer 42)\"" || strings.Contains(sourceResult.String(), "\n(def answer 42)") {
-		t.Fatalf("expected source-str* to avoid extracted inner def form, got %s", sourceResult.String())
+	if mustString(t, sourceResult) == "(def answer 42)" || strings.Contains(mustString(t, sourceResult), "\n(def answer 42)") {
+		t.Fatalf("expected source-str* to avoid extracted inner def form, got %s", mustString(t, sourceResult))
 	}
 }
 
@@ -531,8 +531,8 @@ func TestSourceHelperReturnsDefmultiSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("source-str* failed: %v", err)
 	}
-	if !strings.Contains(sourceResult.String(), "(defmulti area :type)") {
-		t.Fatalf("expected source-str* to return defmulti form, got %s", sourceResult.String())
+	if !strings.Contains(mustString(t, sourceResult), "(defmulti area :type)") {
+		t.Fatalf("expected source-str* to return defmulti form, got %s", mustString(t, sourceResult))
 	}
 }
 
@@ -550,8 +550,8 @@ func TestSourceHelperReturnsDefrecordAndConstructorsSource(t *testing.T) {
 		if err != nil {
 			t.Fatalf("source-str* %s failed: %v", target, err)
 		}
-		if !strings.Contains(sourceResult.String(), "(defrecord User [name])") {
-			t.Fatalf("expected %s source to point at defrecord form, got %s", target, sourceResult.String())
+		if !strings.Contains(mustString(t, sourceResult), "(defrecord User [name])") {
+			t.Fatalf("expected %s source to point at defrecord form, got %s", target, mustString(t, sourceResult))
 		}
 	}
 }
@@ -570,8 +570,8 @@ func TestSourceHelperReturnsDeftypeAndConstructorSource(t *testing.T) {
 		if err != nil {
 			t.Fatalf("source-str* %s failed: %v", target, err)
 		}
-		if !strings.Contains(sourceResult.String(), "(deftype Counter [value])") {
-			t.Fatalf("expected %s source to point at deftype form, got %s", target, sourceResult.String())
+		if !strings.Contains(mustString(t, sourceResult), "(deftype Counter [value])") {
+			t.Fatalf("expected %s source to point at deftype form, got %s", target, mustString(t, sourceResult))
 		}
 	}
 }
@@ -591,7 +591,7 @@ func TestSourceHelperWorksForPrecompiledSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("source-str* failed: %v", err)
 	}
-	if !strings.Contains(sourceResult.String(), "(defn alpha [x] x)") {
-		t.Fatalf("expected source-str* to work for precompiled code, got %s", sourceResult.String())
+	if !strings.Contains(mustString(t, sourceResult), "(defn alpha [x] x)") {
+		t.Fatalf("expected source-str* to work for precompiled code, got %s", mustString(t, sourceResult))
 	}
 }
