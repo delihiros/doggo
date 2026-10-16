@@ -5,10 +5,49 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
+
+	"doggo/internal/types"
+	"doggo/internal/types/atom"
+	"doggo/internal/types/coll"
 )
+
+func ioPathVector(paths ...string) *coll.Vector {
+	items := make([]types.Value, len(paths))
+	for i, path := range paths {
+		items[i] = atom.NewString(path)
+	}
+	return coll.NewVector(items...)
+}
+
+func assertIOValue(t *testing.T, got, want types.Value) {
+	t.Helper()
+	if reflect.TypeOf(got) != reflect.TypeOf(want) {
+		t.Fatalf("unexpected io type: got %T, want %T", got, want)
+	}
+	if expected, ok := want.(*coll.Vector); ok {
+		actual := got.(*coll.Vector)
+		if actual == nil || expected == nil {
+			if actual != expected {
+				t.Fatal("unexpected nil io vector")
+			}
+			return
+		}
+		if len(actual.Items) != len(expected.Items) {
+			t.Fatalf("unexpected io vector length: got %d, want %d", len(actual.Items), len(expected.Items))
+		}
+		for i, item := range expected.Items {
+			assertIOValue(t, actual.Items[i], item)
+		}
+		return
+	}
+	if !types.Equal(got, want) {
+		t.Fatalf("unexpected io result:\nwant %s\ngot  %s", want, got)
+	}
+}
 
 func TestSlurpReadsTextAndBinary(t *testing.T) {
 	runner := MustNewRunner()
@@ -135,11 +174,11 @@ func TestIONamespaceTempAndPathHelpers(t *testing.T) {
 		t.Fatalf("runner error: %v", err)
 	}
 
-	got := value.String()
-	want := `[true true false true true false ["` + filepath.Join(baseDir, "listing", "a.txt") + `" "` + filepath.Join(baseDir, "listing", "b.txt") + `" "` + filepath.Join(baseDir, "listing", "c") + `"] false]`
-	if got != want {
-		t.Fatalf("unexpected io helper result:\nwant %s\ngot  %s", want, got)
-	}
+	assertIOValue(t, value, coll.NewVector(
+		atom.Boolean(true), atom.Boolean(true), atom.Boolean(false), atom.Boolean(true), atom.Boolean(true), atom.Boolean(false),
+		ioPathVector(filepath.Join(baseDir, "listing", "a.txt"), filepath.Join(baseDir, "listing", "b.txt"), filepath.Join(baseDir, "listing", "c")),
+		atom.Boolean(false),
+	))
 }
 
 func TestIOPathHelpers(t *testing.T) {
@@ -178,10 +217,11 @@ func TestIOPathHelpers(t *testing.T) {
 		t.Fatalf("runner error: %v", err)
 	}
 
-	want := `["archive.tar.gz" "folder" "` + nestedDir + `" "gz" nil "` + filepath.Join(nestedDir, "child.txt") + `" true false "` + relativeAbs + `" "` + filepath.Join("deep", "child.txt") + `" "."]`
-	if got := value.String(); got != want {
-		t.Fatalf("unexpected io path helper result:\nwant %s\ngot  %s", want, got)
-	}
+	assertIOValue(t, value, coll.NewVector(
+		atom.NewString("archive.tar.gz"), atom.NewString("folder"), atom.NewString(nestedDir), atom.NewString("gz"), atom.NilValue,
+		atom.NewString(filepath.Join(nestedDir, "child.txt")), atom.Boolean(true), atom.Boolean(false), atom.NewString(relativeAbs),
+		atom.NewString(filepath.Join("deep", "child.txt")), atom.NewString("."),
+	))
 
 	tests := []struct {
 		input       string
@@ -233,10 +273,10 @@ func TestIONamespaceFileSeqWalksDepthFirst(t *testing.T) {
 		t.Fatalf("runner error: %v", err)
 	}
 
-	want := `[["` + filepath.Join(baseDir, "tree") + `" "` + filepath.Join(baseDir, "tree", "a.txt") + `" "` + filepath.Join(baseDir, "tree", "sub") + `" "` + filepath.Join(baseDir, "tree", "sub", "b.txt") + `"] ["` + filepath.Join(baseDir, "tree", "a.txt") + `"] ["` + filepath.Join(baseDir, "tree", "missing") + `"]]`
-	if got := value.String(); got != want {
-		t.Fatalf("unexpected io/file-seq result:\nwant %s\ngot  %s", want, got)
-	}
+	assertIOValue(t, value, coll.NewVector(
+		ioPathVector(filepath.Join(baseDir, "tree"), filepath.Join(baseDir, "tree", "a.txt"), filepath.Join(baseDir, "tree", "sub"), filepath.Join(baseDir, "tree", "sub", "b.txt")),
+		ioPathVector(filepath.Join(baseDir, "tree", "a.txt")), ioPathVector(filepath.Join(baseDir, "tree", "missing")),
+	))
 }
 
 func symlinkOrSkip(t *testing.T, oldname, newname string) {
@@ -307,16 +347,13 @@ func TestIOWalkAndGlob(t *testing.T) {
 			t.Fatalf("runner error: %v", err)
 		}
 
-		want := `[["` + root + `" "` + childA + `" "` + emptyDir + `" "` + subDir + `" "` + childB + `" "` + childC + `"] [` +
-			`"` + childA + `" "` + emptyDir + `" "` + childB + `" "` + childC + `" "` + subDir + `" "` + root + `"] [` +
-			`"` + childA + `" "` + childB + `" "` + childC + `"] [` +
-			`"` + root + `" "` + emptyDir + `" "` + subDir + `"] [` +
-			`"` + childA + `" "` + emptyDir + `" "` + subDir + `" "` + childB + `" "` + childC + `"] [` +
-			`"` + root + `" "` + childA + `" "` + emptyDir + `" "` + subDir + `"] [` +
-			`"` + childA + `"] ["` + childA + `"] ["` + childB + `" "` + childC + `"] []]`
-		if got := value.String(); got != want {
-			t.Fatalf("unexpected io/walk or io/glob result:\nwant %s\ngot  %s", want, got)
-		}
+		assertIOValue(t, value, coll.NewVector(
+			ioPathVector(root, childA, emptyDir, subDir, childB, childC),
+			ioPathVector(childA, emptyDir, childB, childC, subDir, root),
+			ioPathVector(childA, childB, childC), ioPathVector(root, emptyDir, subDir),
+			ioPathVector(childA, emptyDir, subDir, childB, childC), ioPathVector(root, childA, emptyDir, subDir),
+			ioPathVector(childA), ioPathVector(childA), ioPathVector(childB, childC), ioPathVector(),
+		))
 	})
 
 	t.Run("walk follows symlinked directories only when requested", func(t *testing.T) {
@@ -347,13 +384,10 @@ func TestIOWalkAndGlob(t *testing.T) {
 			t.Fatalf("runner error: %v", err)
 		}
 
-		want := `[["` + root + `" "` + link + `" "` + realDir + `" "` + child + `"] [` +
-			`"` + root + `" "` + link + `" "` + linkChild + `" "` + realDir + `" "` + child + `"] [` +
-			`"` + root + `" "` + link + `" "` + realDir + `"] [` +
-			`"` + linkChild + `" "` + child + `"]]`
-		if got := value.String(); got != want {
-			t.Fatalf("unexpected symlink walk result:\nwant %s\ngot  %s", want, got)
-		}
+		assertIOValue(t, value, coll.NewVector(
+			ioPathVector(root, link, realDir, child), ioPathVector(root, link, linkChild, realDir, child),
+			ioPathVector(root, link, realDir), ioPathVector(linkChild, child),
+		))
 	})
 
 	t.Run("walk follow-symlinks stops directory cycles", func(t *testing.T) {
@@ -380,10 +414,7 @@ func TestIOWalkAndGlob(t *testing.T) {
 			t.Fatalf("runner error: %v", err)
 		}
 
-		want := `["` + root + `" "` + realDir + `" "` + child + `" "` + loop + `"]`
-		if got := value.String(); got != want {
-			t.Fatalf("unexpected cycle-safe symlink walk result:\nwant %s\ngot  %s", want, got)
-		}
+		assertIOValue(t, value, ioPathVector(root, realDir, child, loop))
 	})
 
 	t.Run("walk follow-symlinks tolerates broken symlinks", func(t *testing.T) {
@@ -411,12 +442,7 @@ func TestIOWalkAndGlob(t *testing.T) {
 			t.Fatalf("runner error: %v", err)
 		}
 
-		want := `[["` + root + `" "` + broken + `" "` + child + `"] [` +
-			`"` + root + `"] [` +
-			`"` + broken + `" "` + child + `"]]`
-		if got := value.String(); got != want {
-			t.Fatalf("unexpected broken symlink walk result:\nwant %s\ngot  %s", want, got)
-		}
+		assertIOValue(t, value, coll.NewVector(ioPathVector(root, broken, child), ioPathVector(root), ioPathVector(broken, child)))
 	})
 
 	t.Run("walk follow-symlinks tolerates symlinks through non-directories", func(t *testing.T) {
@@ -445,13 +471,9 @@ func TestIOWalkAndGlob(t *testing.T) {
 			t.Fatalf("runner error: %v", err)
 		}
 
-		want := `[["` + root + `" "` + link + `" "` + targetFile + `"] [` +
-			`"` + root + `"] [` +
-			`"` + link + `" "` + targetFile + `"] [` +
-			`"` + root + `" "` + link + `" "` + targetFile + `"]]`
-		if got := value.String(); got != want {
-			t.Fatalf("unexpected non-directory symlink walk result:\nwant %s\ngot  %s", want, got)
-		}
+		assertIOValue(t, value, coll.NewVector(
+			ioPathVector(root, link, targetFile), ioPathVector(root), ioPathVector(link, targetFile), ioPathVector(root, link, targetFile),
+		))
 	})
 
 	t.Run("walk follow-symlinks tolerates self-referential symlink loops", func(t *testing.T) {
@@ -479,12 +501,7 @@ func TestIOWalkAndGlob(t *testing.T) {
 			t.Fatalf("runner error: %v", err)
 		}
 
-		want := `[["` + root + `" "` + child + `" "` + loop + `"] [` +
-			`"` + root + `"] [` +
-			`"` + child + `" "` + loop + `"]]`
-		if got := value.String(); got != want {
-			t.Fatalf("unexpected self-referential symlink walk result:\nwant %s\ngot  %s", want, got)
-		}
+		assertIOValue(t, value, coll.NewVector(ioPathVector(root, child, loop), ioPathVector(root), ioPathVector(child, loop)))
 	})
 
 	t.Run("walk follow-symlinks still fails on inaccessible symlink targets", func(t *testing.T) {
@@ -601,10 +618,7 @@ func TestIOWalkAndGlob(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected prefix walk to succeed before unreadable child, got %v", err)
 		}
-		wantPrefix := `["` + root + `" "` + childFile + `"]`
-		if got := prefixValue.String(); got != wantPrefix {
-			t.Fatalf("unexpected prefix walk result:\nwant %s\ngot  %s", wantPrefix, got)
-		}
+		assertIOValue(t, prefixValue, ioPathVector(root, childFile))
 
 		if _, err := runner.Run(`(require '[doggo.io :as io]) (vec (io/walk "` + filepath.ToSlash(root) + `"))`); err == nil {
 			t.Fatalf("expected full walk to fail once unreadable child is forced")
@@ -673,10 +687,7 @@ func TestIONamespaceFileSeqIncludesUnreadableDirectoriesWithoutDescending(t *tes
 		t.Fatalf("runner error: %v", err)
 	}
 
-	want := `[["` + readableRoot + `" "` + readableFile + `" "` + unreadableChild + `"] ["` + unreadableRoot + `"]]`
-	if got := value.String(); got != want {
-		t.Fatalf("unexpected io/file-seq unreadable result:\nwant %s\ngot  %s", want, got)
-	}
+	assertIOValue(t, value, coll.NewVector(ioPathVector(readableRoot, readableFile, unreadableChild), ioPathVector(unreadableRoot)))
 }
 
 func TestIONamespaceTempAndPathHelpersRejectInvalidInput(t *testing.T) {
@@ -751,10 +762,7 @@ func TestIOTreeMutation(t *testing.T) {
 			t.Fatalf("runner error: %v", err)
 		}
 
-		want := `["` + target + `" "` + target + `"]`
-		if got := value.String(); got != want {
-			t.Fatalf("unexpected mkdirs result:\nwant %s\ngot  %s", want, got)
-		}
+		assertIOValue(t, value, ioPathVector(target, target))
 		if info, err := os.Stat(target); err != nil || !info.IsDir() {
 			t.Fatalf("expected mkdirs target to exist as directory, info=%v err=%v", info, err)
 		}

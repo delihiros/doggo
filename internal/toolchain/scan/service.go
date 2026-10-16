@@ -44,17 +44,12 @@ type Targets struct {
 type Service struct{}
 
 func (s Service) DeriveTargetsTree(tree *project.OwnedTree, projectRoot string, deps []project.LockDep) (Targets, error) {
-	depGoPackages, err := CollectDependencyGoPackages(deps)
+	depGoPackages, depReifySources, err := collectResolvedDependencyTargetsTree(tree, projectRoot, deps)
 	if err != nil {
 		return Targets{}, err
 	}
 
 	goPackages := project.NormalizeStringSlice(append(append([]string{}, defaultInteropPackages...), depGoPackages...))
-
-	depReifySources, err := CollectResolvedDependencyInterfacesTree(tree, projectRoot, deps)
-	if err != nil {
-		return Targets{}, err
-	}
 
 	reifyCandidates := append([]reifytarget.Candidate(nil), defaultReifyCandidates...)
 	for _, source := range depReifySources {
@@ -93,28 +88,40 @@ func CollectDependencyGoPackages(resolvedDeps []project.LockDep) ([]string, erro
 	return project.NormalizeStringSlice(out), nil
 }
 
-func CollectResolvedDependencyInterfacesTree(tree *project.OwnedTree, projectRoot string, deps []project.LockDep) (_ []string, err error) {
+func CollectResolvedDependencyInterfacesTree(tree *project.OwnedTree, projectRoot string, deps []project.LockDep) ([]string, error) {
+	_, interfaces, err := collectResolvedDependencyTargetsTree(tree, projectRoot, deps)
+	return interfaces, err
+}
+
+func collectResolvedDependencyTargetsTree(tree *project.OwnedTree, projectRoot string, deps []project.LockDep) (_ []string, _ []string, err error) {
 	if !slices.ContainsFunc(deps, func(dep project.LockDep) bool { return dep.GoModule != "" }) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	isolated, err := copyRootForPackageLoad(tree)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { err = errors.Join(err, closeCopiedRoot(isolated)) }()
 	interfaces := make(map[string]struct{})
+	packagePaths := make(map[string]struct{})
+	seen := make(map[string]struct{})
 	for _, dep := range deps {
 		if dep.GoModule == "" {
 			continue
 		}
+		identity := dep.GoModule + "\x00" + dep.InstallDir
+		if _, ok := seen[identity]; ok {
+			continue
+		}
+		seen[identity] = struct{}{}
 		installRoot, err := tree.OpenRoot(dep.InstallDir)
 		if err != nil {
-			return nil, fmt.Errorf("resolve install directory for %q: %w", dep.Source, err)
+			return nil, nil, fmt.Errorf("resolve install directory for %q: %w", dep.Source, err)
 		}
 		installDir := ownedInstallDir{path: filepath.Join(projectRoot, filepath.FromSlash(dep.InstallDir)), root: installRoot}
 		isolatedRoot, err := isolated.Tree().OpenRoot(dep.InstallDir)
 		if err != nil {
-			return nil, fmt.Errorf("resolve isolated install directory for %q: %w", dep.Source, errors.Join(err, installDir.root.Close()))
+			return nil, nil, fmt.Errorf("resolve isolated install directory for %q: %w", dep.Source, errors.Join(err, installDir.root.Close()))
 		}
 		isolatedInstallDir := ownedInstallDir{path: filepath.Join(isolated.Path(), filepath.FromSlash(dep.InstallDir)), root: isolatedRoot}
 		if beforeDependencyPackagesLoadForTest != nil {
@@ -122,15 +129,22 @@ func CollectResolvedDependencyInterfacesTree(tree *project.OwnedTree, projectRoo
 		}
 		preloadErr := project.VerifyRootPath(isolatedInstallDir.path, isolatedInstallDir.root)
 		var found []string
+		var selected []string
 		var loadErr error
 		if preloadErr == nil {
-			found, loadErr = collectExportedInterfaces(isolatedInstallDir.path, []string{"."})
+			selected, loadErr = selectDependencyPackages(isolatedInstallDir.path, dep.GoModule)
+			if loadErr == nil {
+				found, loadErr = collectExportedInterfaces(isolatedInstallDir.path, selected)
+			}
 		}
 		verifyErr := tree.VerifyComplete()
 		isolatedVerifyErr := project.VerifyRootPath(isolatedInstallDir.path, isolatedInstallDir.root)
 		closeErr := errors.Join(isolatedInstallDir.root.Close(), installDir.root.Close())
 		if err := errors.Join(preloadErr, loadErr, verifyErr, isolatedVerifyErr, closeErr); err != nil {
-			return nil, fmt.Errorf("load interfaces for %q: %w", dep.Source, err)
+			return nil, nil, fmt.Errorf("load Go packages for %q: %w", dep.Source, err)
+		}
+		for _, path := range selected {
+			packagePaths[path] = struct{}{}
 		}
 		for _, name := range found {
 			interfaces[name] = struct{}{}
@@ -140,7 +154,11 @@ func CollectResolvedDependencyInterfacesTree(tree *project.OwnedTree, projectRoo
 	for name := range interfaces {
 		out = append(out, name)
 	}
-	return project.NormalizeStringSlice(out), nil
+	paths := make([]string, 0, len(packagePaths))
+	for path := range packagePaths {
+		paths = append(paths, path)
+	}
+	return project.NormalizeStringSlice(paths), project.NormalizeStringSlice(out), nil
 }
 
 func copyRootForPackageLoad(source *project.OwnedTree) (*project.OwnedTempRoot, error) {
@@ -228,6 +246,9 @@ func collectExportedInterfaces(projectRoot string, targets []string) ([]string, 
 		for _, pkg := range loadedPkgs {
 			if len(pkg.Errors) > 0 {
 				return nil, fmt.Errorf("package %q has errors: %v", pkgPath, pkg.Errors)
+			}
+			if pkg.IllTyped {
+				return nil, fmt.Errorf("package %q or dependency is ill-typed", pkgPath)
 			}
 			if pkg.Types == nil {
 				continue
