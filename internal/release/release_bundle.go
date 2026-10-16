@@ -1062,6 +1062,10 @@ func ParseArtifactList(list string) []string {
 }
 
 func resolveProjectRelativePath(rootPath, inputPath string) (string, error) {
+	rootPath, err := project.NormalizeSystemPath(rootPath)
+	if err != nil {
+		return "", err
+	}
 	pathValue := strings.TrimSpace(inputPath)
 	if pathValue == "" {
 		return "", fmt.Errorf("path is empty")
@@ -1073,6 +1077,10 @@ func resolveProjectRelativePath(rootPath, inputPath string) (string, error) {
 	abs, err := filepath.Abs(candidate)
 	if err != nil {
 		return "", fmt.Errorf("resolve absolute path: %w", err)
+	}
+	abs, err = project.NormalizeSystemPath(abs)
+	if err != nil {
+		return "", err
 	}
 	rel, err := filepath.Rel(rootPath, abs)
 	if err != nil {
@@ -1230,6 +1238,10 @@ func openRetainedAbsoluteParent(path string, createMode fs.FileMode) (*retainedA
 		return nil, err
 	}
 	abs = filepath.Clean(abs)
+	abs, err = project.NormalizeSystemPath(abs)
+	if err != nil {
+		return nil, err
+	}
 	name := filepath.Base(abs)
 	if name == "." || name == string(filepath.Separator) {
 		return nil, fmt.Errorf("file target is invalid: %s", path)
