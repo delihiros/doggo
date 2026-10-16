@@ -151,7 +151,7 @@
     "@vscode/vsce": "^4.0.0",
     "esbuild": "^0.28.2",
     "rimraf": "^6.0.1",
-    "typescript": "^5.8.2",
+    "typescript": "^7.0.2",
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.3.2",
     "semver": "^7.8.1"
