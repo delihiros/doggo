@@ -54,10 +54,23 @@ func (e *NormalizeError) ExceptionData() *doggoerr.ExceptionData {
 }
 
 func Normalize(value types.Value) (*Schema, error) {
-	return normalize(value, nil)
+	return NormalizeWithPredicateResolver(value, nil)
 }
 
-func normalize(value types.Value, path Path) (*Schema, error) {
+// NormalizeWithPredicateResolver accepts runtime-specific predicate functions
+// without making schema depend on their execution engine. Values implementing
+// types.Fn are used directly; resolve handles other callable representations.
+// The original schema values are retained for explanations and errors.
+func NormalizeWithPredicateResolver(value types.Value, resolve func(types.Value) (types.Fn, bool)) (*Schema, error) {
+	n := normalizer{resolvePredicate: resolve}
+	return n.normalize(value, nil)
+}
+
+type normalizer struct {
+	resolvePredicate func(types.Value) (types.Fn, bool)
+}
+
+func (n normalizer) normalize(value types.Value, path Path) (*Schema, error) {
 	if value == nil {
 		return nil, &NormalizeError{Path: path, Message: "schema cannot be nil"}
 	}
@@ -68,15 +81,15 @@ func normalize(value types.Value, path Path) (*Schema, error) {
 
 	switch v := value.(type) {
 	case *coll.Vector:
-		return normalizeSequence(v.Items, path, value)
+		return n.normalizeSequence(v.Items, path, value)
 	case *coll.List:
-		return normalizeSequence(v.Items, path, value)
+		return n.normalizeSequence(v.Items, path, value)
 	case types.Seq:
 		items, ok := types.ToSlice(v)
 		if !ok {
 			return nil, &NormalizeError{Path: path, Expected: "schema vector or list", Actual: value}
 		}
-		return normalizeSequence(items, path, value)
+		return n.normalizeSequence(items, path, value)
 	default:
 		return nil, &NormalizeError{Path: path, Expected: "schema keyword or vector form", Actual: value}
 	}
@@ -117,7 +130,7 @@ func normalizeKeywordSchema(kw atom.Keyword, raw types.Value) (*Schema, error) {
 	}
 }
 
-func normalizeSequence(items []types.Value, path Path, raw types.Value) (*Schema, error) {
+func (n normalizer) normalizeSequence(items []types.Value, path Path, raw types.Value) (*Schema, error) {
 	if len(items) == 0 {
 		return nil, &NormalizeError{Path: path, Message: "schema vector must not be empty"}
 	}
@@ -132,23 +145,23 @@ func normalizeSequence(items []types.Value, path Path, raw types.Value) (*Schema
 		if len(items) != 2 {
 			return nil, &NormalizeError{Path: path, Message: "maybe schema expects exactly one child schema"}
 		}
-		child, err := normalize(items[1], path)
+		child, err := n.normalize(items[1], path)
 		if err != nil {
 			return nil, err
 		}
 		return &Schema{kind: KindMaybe, raw: raw, element: child}, nil
 	case "vector":
-		return normalizeUnaryCollection(KindVector, raw, items, path)
+		return n.normalizeUnaryCollection(KindVector, raw, items, path)
 	case "set":
-		return normalizeUnaryCollection(KindSet, raw, items, path)
+		return n.normalizeUnaryCollection(KindSet, raw, items, path)
 	case "list":
-		return normalizeUnaryCollection(KindList, raw, items, path)
+		return n.normalizeUnaryCollection(KindList, raw, items, path)
 	case "seq":
-		return normalizeUnaryCollection(KindSeq, raw, items, path)
+		return n.normalizeUnaryCollection(KindSeq, raw, items, path)
 	case "tuple":
 		children := make([]*Schema, 0, len(items)-1)
 		for i, item := range items[1:] {
-			child, err := normalize(item, path.Push(indexValue(i)))
+			child, err := n.normalize(item, path.Push(indexValue(i)))
 			if err != nil {
 				return nil, err
 			}
@@ -162,7 +175,7 @@ func normalizeSequence(items []types.Value, path Path, raw types.Value) (*Schema
 			if !ok || len(pair) != 2 {
 				return nil, &NormalizeError{Path: path.Push(indexValue(i)), Message: "map schema entries must be 2-element vectors or lists", Actual: item}
 			}
-			child, err := normalize(pair[1], path.Push(pair[0]))
+			child, err := n.normalize(pair[1], path.Push(pair[0]))
 			if err != nil {
 				return nil, err
 			}
@@ -173,11 +186,11 @@ func normalizeSequence(items []types.Value, path Path, raw types.Value) (*Schema
 		if len(items) != 3 {
 			return nil, &NormalizeError{Path: path, Message: "map-of schema expects key and value schemas"}
 		}
-		keySchema, err := normalize(items[1], path.Push(atom.NewKeyword("key")))
+		keySchema, err := n.normalize(items[1], path.Push(atom.NewKeyword("key")))
 		if err != nil {
 			return nil, err
 		}
-		valueSchema, err := normalize(items[2], path.Push(atom.NewKeyword("value")))
+		valueSchema, err := n.normalize(items[2], path.Push(atom.NewKeyword("value")))
 		if err != nil {
 			return nil, err
 		}
@@ -186,7 +199,7 @@ func normalizeSequence(items []types.Value, path Path, raw types.Value) (*Schema
 		if len(items) < 2 {
 			return nil, &NormalizeError{Path: path, Message: "or schema expects at least one child schema"}
 		}
-		children, err := normalizeChildren(items[1:], path)
+		children, err := n.normalizeChildren(items[1:], path)
 		if err != nil {
 			return nil, err
 		}
@@ -195,7 +208,7 @@ func normalizeSequence(items []types.Value, path Path, raw types.Value) (*Schema
 		if len(items) < 2 {
 			return nil, &NormalizeError{Path: path, Message: "and schema expects at least one child schema"}
 		}
-		children, err := normalizeChildren(items[1:], path)
+		children, err := n.normalizeChildren(items[1:], path)
 		if err != nil {
 			return nil, err
 		}
@@ -207,30 +220,33 @@ func normalizeSequence(items []types.Value, path Path, raw types.Value) (*Schema
 			return nil, &NormalizeError{Path: path, Message: "predicate schema expects exactly one callable"}
 		}
 		fn, ok := items[1].(types.Fn)
+		if !ok && n.resolvePredicate != nil {
+			fn, ok = n.resolvePredicate(items[1])
+		}
 		if !ok {
 			return nil, &NormalizeError{Path: path.Push(atom.NewKeyword("predicate")), Expected: "callable", Actual: items[1]}
 		}
-		return &Schema{kind: KindPredicate, raw: raw, predicate: fn}, nil
+		return &Schema{kind: KindPredicate, raw: raw, predicate: fn, predicateValue: items[1]}, nil
 	default:
 		return nil, &NormalizeError{Path: path, Message: fmt.Sprintf("unknown schema operator %s", strings.TrimPrefix(head.String(), ":"))}
 	}
 }
 
-func normalizeUnaryCollection(kind Kind, raw types.Value, items []types.Value, path Path) (*Schema, error) {
+func (n normalizer) normalizeUnaryCollection(kind Kind, raw types.Value, items []types.Value, path Path) (*Schema, error) {
 	if len(items) != 2 {
 		return nil, &NormalizeError{Path: path, Message: fmt.Sprintf("%s schema expects exactly one child schema", kind)}
 	}
-	child, err := normalize(items[1], path)
+	child, err := n.normalize(items[1], path)
 	if err != nil {
 		return nil, err
 	}
 	return &Schema{kind: kind, raw: raw, element: child}, nil
 }
 
-func normalizeChildren(items []types.Value, path Path) ([]*Schema, error) {
+func (n normalizer) normalizeChildren(items []types.Value, path Path) ([]*Schema, error) {
 	children := make([]*Schema, 0, len(items))
 	for i, item := range items {
-		child, err := normalize(item, path.Push(indexValue(i)))
+		child, err := n.normalize(item, path.Push(indexValue(i)))
 		if err != nil {
 			return nil, err
 		}

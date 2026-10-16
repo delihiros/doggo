@@ -36,15 +36,16 @@ type MapEntry struct {
 // Schema is the canonical owner of normalized schema state for validation,
 // explain, and generation.
 type Schema struct {
-	kind        Kind
-	raw         types.Value
-	element     *Schema
-	items       []*Schema
-	entries     []MapEntry
-	keySchema   *Schema
-	valueSchema *Schema
-	enumValues  []types.Value
-	predicate   types.Fn
+	kind           Kind
+	raw            types.Value
+	element        *Schema
+	items          []*Schema
+	entries        []MapEntry
+	keySchema      *Schema
+	valueSchema    *Schema
+	enumValues     []types.Value
+	predicate      types.Fn
+	predicateValue types.Value
 }
 
 func (s *Schema) Kind() Kind {
