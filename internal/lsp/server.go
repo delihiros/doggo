@@ -2297,6 +2297,7 @@ func (c *occurrenceCollector) parseNamespaceDeclaration(scope *occurrenceScope) 
 	c.next()                         // ns
 	c.pos = c.skipOneFormFrom(c.pos) // namespace name, including metadata
 	for !c.done() && c.peek().Type != lexer.RPAREN {
+		c.consumeMetadataPrefixes()
 		start := c.pos
 		if c.peek().Type != lexer.LPAREN {
 			c.pos = c.skipOneFormFrom(start)
@@ -2321,6 +2322,7 @@ func (c *occurrenceCollector) parseNamespaceDeclaration(scope *occurrenceScope) 
 }
 
 func (c *occurrenceCollector) parseNamespaceRequireSpec(scope *occurrenceScope) {
+	c.consumeMetadataPrefixes()
 	if c.peek().Type != lexer.LBRACKET {
 		c.pos = c.skipOneFormFrom(c.pos)
 		return
@@ -2329,6 +2331,7 @@ func (c *occurrenceCollector) parseNamespaceRequireSpec(scope *occurrenceScope) 
 	namespace := c.next()
 	for !c.done() && c.peek().Type != lexer.RBRACKET {
 		option := c.next()
+		c.consumeMetadataPrefixes()
 		if option.Type == lexer.KEYWORD && option.Literal == "refer" &&
 			namespace.Type == lexer.IDENT && namespace.Literal == c.target.Namespace && c.peek().Type == lexer.LBRACKET {
 			c.next() // explicit :refer names identify globals from this namespace

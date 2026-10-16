@@ -89,6 +89,48 @@ func TestRenameV5NamespaceMetadataAndRuntimeRequire(t *testing.T) {
 	}
 }
 
+func TestRenameV5MetadataRequireDeclarations(t *testing.T) {
+	for _, tc := range []struct{ name, clause string }{
+		{"clause", "^:probe (:require [app.lib :refer [$name]])"},
+		{"spec vector", "(:require ^:probe [app.lib :refer [$name]])"},
+		{"refer vector", "(:require [app.lib :refer ^:probe [$name]])"},
+		{"literal clause metadata", "^{:probe target} (:require [app.lib :refer [$name]])"},
+		{"literal spec metadata", "(:require ^{:probe [target]} [app.lib :refer [$name]])"},
+		{"literal refer metadata", "(:require [app.lib :refer ^{:probe (target)} [$name]])"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			libPath := filepath.Join(root, "app", "lib.dog")
+			libURI := toolindex.PathToFileURI(libPath)
+			mainURI := toolindex.PathToFileURI(filepath.Join(root, "main.dog"))
+			lib := "(ns app.lib)\n(def target 7)\n"
+			main := "(ns demo " + strings.ReplaceAll(tc.clause, "$name", "target") + ")\ntarget\n"
+			mustWrite(t, libPath, lib)
+			if before := runRenameTestSourceInProject(t, root, main); before != "7" {
+				t.Fatalf("before = %s, want 7", before)
+			}
+			messages := runServer(t, []map[string]any{
+				req(1, lspMethodInitialize, map[string]any{"rootUri": toolindex.PathToFileURI(root)}),
+				notify(lspMethodDidOpen, map[string]any{"textDocument": map[string]any{"uri": libURI, "text": lib, "version": 1}}),
+				notify(lspMethodDidOpen, map[string]any{"textDocument": map[string]any{"uri": mainURI, "text": main, "version": 1}}),
+				req(2, lspMethodRename, map[string]any{"textDocument": map[string]any{"uri": libURI}, "position": map[string]any{"line": 1, "character": 5}, "newName": "renamed"}),
+				notify(lspMethodExit, map[string]any{}),
+			})
+			response := findResponseByID(t, messages, 2)
+			renamedLib := applyRenameTestEdits(t, lib, libURI, response)
+			renamedMain := applyRenameTestEdits(t, main, mainURI, response)
+			wantMain := "(ns demo " + strings.ReplaceAll(tc.clause, "$name", "renamed") + ")\nrenamed\n"
+			if renamedLib != "(ns app.lib)\n(def renamed 7)\n" || renamedMain != wantMain {
+				t.Errorf("declaration rename = %q / %q, want main %q; response = %v", renamedLib, renamedMain, wantMain, response)
+			}
+			mustWrite(t, libPath, renamedLib)
+			if after := runRenameTestSourceInProject(t, root, renamedMain); after != "7" {
+				t.Fatalf("after = %s, want 7", after)
+			}
+		})
+	}
+}
+
 func TestRenameV5ReservedDestination(t *testing.T) {
 	source := "(ns audit)\n(def target (fn [x] (+ x 1)))\n(target 2)\n"
 	if before := runRenameTestSource(t, source); before != "3" {
