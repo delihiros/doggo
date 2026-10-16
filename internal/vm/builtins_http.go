@@ -355,24 +355,7 @@ func httpUTF8ResponseString(label, value string) (atom.String, error) {
 }
 
 func httpArgumentError(argument, expected string, actual types.Value, format string, args ...any) error {
-	data := coll.NewMapFromPairs([]types.Value{
-		atom.NewKeyword("kind"), atom.NewKeyword("invalid-argument"),
-		atom.NewKeyword("function"), types.Symbol(httpPublicRequestName),
-		atom.NewKeyword("argument"), atom.NewKeyword(argument),
-		atom.NewKeyword("expected"), atom.NewString(expected),
-		atom.NewKeyword("actual"), httpUTF8Actual(actual),
-	})
-	return &VMError{Value: newExceptionInfo(httpPublicRequestName+": "+fmt.Sprintf(format, args...), data, nil)}
-}
-
-func httpUTF8Actual(value types.Value) types.Value {
-	if value == nil {
-		return atom.NilValue
-	}
-	if !utf8.ValidString(value.String()) {
-		return atom.NewString("<invalid UTF-8>")
-	}
-	return value
+	return argumentVMError(httpPublicRequestName, argument, expected, actual, httpPublicRequestName+": "+fmt.Sprintf(format, args...))
 }
 
 func httpRuntimeError(format string, args ...any) error {

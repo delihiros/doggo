@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"go/constant"
 	"go/format"
+	"go/token"
 	"go/types"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,7 +35,7 @@ import (
 	"reflect"
 {{- range .Pkgs }}
 	{{- if ne .PkgPath "reflect" }}
-	{{ .Name }} "{{ .PkgPath }}"
+	{{ if .Exports }}{{ .Name }}{{ else }}_{{ end }} "{{ .PkgPath }}"
 	{{- end }}
 {{- end }}
 )
@@ -506,6 +509,34 @@ func isSupportedInteropType(typeName *types.TypeName) bool {
 	return true
 }
 
+// Constants assigned to interface{} use their default Go type. A valid native
+// constant may exceed that type, even though it can be used in other contexts.
+func isSupportedInteropConstant(value *types.Const, sizes types.Sizes) bool {
+	basic, ok := value.Type().Underlying().(*types.Basic)
+	if !ok || basic.Info()&types.IsUntyped == 0 {
+		return true
+	}
+	switch basic.Kind() {
+	case types.UntypedInt, types.UntypedRune:
+		bits := int64(32) // The default type of an untyped rune is always int32.
+		if basic.Kind() == types.UntypedInt {
+			bits = sizes.Sizeof(types.Typ[types.Int]) * 8
+		}
+		limit := constant.Shift(constant.MakeInt64(1), token.SHL, uint(bits-1))
+		return constant.Compare(value.Val(), token.GEQ, constant.UnaryOp(token.SUB, limit, 0)) &&
+			constant.Compare(value.Val(), token.LSS, limit)
+	case types.UntypedFloat:
+		// Inexact finite rounding is valid when defaulting to float64.
+		rounded, _ := constant.Float64Val(value.Val())
+		return !math.IsInf(rounded, 0)
+	case types.UntypedComplex:
+		realPart, _ := constant.Float64Val(constant.Real(value.Val()))
+		imagPart, _ := constant.Float64Val(constant.Imag(value.Val()))
+		return !math.IsInf(realPart, 0) && !math.IsInf(imagPart, 0)
+	}
+	return true
+}
+
 func generateInteropFile(projectRoot, output string, targetPkgs []string) error {
 	output, outputRel, err := containedOutput(projectRoot, output)
 	if err != nil {
@@ -643,7 +674,7 @@ func generateInteropFileRoot(root *os.Root, projectRoot, output, outputRel strin
 					IsType:  false,
 				})
 			case *types.Const:
-				if name == "MaxUint" || name == "MaxUint64" {
+				if !isSupportedInteropConstant(v, pkg.TypesSizes) {
 					continue
 				}
 				pData.Exports = append(pData.Exports, ExportData{

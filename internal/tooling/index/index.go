@@ -701,7 +701,7 @@ func collectEmittedBindings(form types.Value, currentNS string, bindings map[str
 		for _, item := range list.Items[1:] {
 			currentNS = collectEmittedBindings(item, currentNS, bindings)
 		}
-	case "def", "defonce", "defn", "defmacro":
+	case "def", "defonce", "defn", "defmacro", "defmulti":
 		if len(list.Items) >= 2 {
 			if name, ok := types.SymbolName(list.Items[1]); ok && name != "" {
 				bindings[compiler.QualifySymbol(currentNS, name)] = emittedBinding{}

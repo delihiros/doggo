@@ -241,7 +241,10 @@ func TestCompileDefAddsSourceMetadataByDefault(t *testing.T) {
 	assertMapValueString(t, meta, "ns", "user")
 	assertMapValueString(t, meta, "name", "answer")
 	assertMapValueString(t, meta, "doc", `"answer"`)
-	assertMapValueString(t, meta, "source", `"(def ^{:doc "answer"} answer 42)"`)
+	assertMapValueString(t, meta, "source", `"(def ^{:doc \"answer\"} answer 42)"`)
+	if actual, ok := meta.Get(atom.NewKeyword("source")).(atom.String); !ok || string(actual) != source[formSpan.StartOffset:formSpan.EndOffset] {
+		t.Fatalf("source metadata bytes = %q, want %q", actual, source[formSpan.StartOffset:formSpan.EndOffset])
+	}
 }
 
 func findDefMetadataByName(constants []types.Value, name string) *coll.Map {

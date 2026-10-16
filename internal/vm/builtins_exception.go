@@ -126,14 +126,7 @@ func argumentVMError(function, argument, expected string, actual types.Value, me
 	if !utf8.ValidString(message) {
 		message = strings.ToValidUTF8(message, "\uFFFD")
 	}
-	if !plainArgumentActual(actual) {
-		actual = atom.NewString("<unsafe value>")
-	} else if actual != nil && !utf8.ValidString(actual.String()) {
-		actual = atom.NewString("<invalid UTF-8>")
-	}
-	if actual == nil {
-		actual = atom.NilValue
-	}
+	actual = safeArgumentActual(actual)
 	data := coll.NewMapFromPairs([]types.Value{
 		atom.NewKeyword("kind"), atom.NewKeyword("invalid-argument"),
 		atom.NewKeyword("function"), types.Symbol(function),
@@ -144,18 +137,38 @@ func argumentVMError(function, argument, expected string, actual types.Value, me
 	return &VMError{Value: newExceptionInfo(message, data, nil)}
 }
 
-func plainArgumentActual(value types.Value) bool {
+func safeArgumentActual(value types.Value) types.Value {
 	budget := 256
-	return plainArgumentActualWithin(value, &budget)
+	validUTF8 := true
+	// Keep scanning after invalid bytes so unsafe or unbounded values take priority.
+	if !plainArgumentActualWithin(value, &budget, &validUTF8) {
+		return atom.NewString("<unsafe value>")
+	}
+	if !validUTF8 {
+		return atom.NewString("<invalid UTF-8>")
+	}
+	if value == nil {
+		return atom.NilValue
+	}
+	return value
 }
 
-func plainArgumentActualWithin(value types.Value, budget *int) bool {
+func plainArgumentActualWithin(value types.Value, budget *int, validUTF8 *bool) bool {
 	if *budget == 0 {
 		return false
 	}
 	*budget--
 	switch value := value.(type) {
-	case nil, types.Nil, atom.Boolean, atom.String, atom.Character, atom.Keyword, types.Symbol, coll.RangeInt:
+	case nil, types.Nil, atom.Boolean, atom.Character, coll.RangeInt:
+		return true
+	case atom.String:
+		*validUTF8 = *validUTF8 && utf8.ValidString(string(value))
+		return true
+	case atom.Keyword:
+		*validUTF8 = *validUTF8 && utf8.ValidString(string(value))
+		return true
+	case types.Symbol:
+		*validUTF8 = *validUTF8 && utf8.ValidString(string(value))
 		return true
 	case *atom.Number:
 		return value != nil
@@ -165,30 +178,30 @@ func plainArgumentActualWithin(value types.Value, budget *int) bool {
 		if value == nil {
 			return true
 		}
-		if !plainArgumentActualWithin(value.Metadata, budget) || !plainArgumentValues(value.Order, budget) {
+		if !plainArgumentActualWithin(value.Metadata, budget, validUTF8) || !plainArgumentValues(value.Order, budget, validUTF8) {
 			return false
 		}
 		for _, bucket := range value.Buckets {
 			for _, entry := range bucket {
-				if entry == nil || !plainArgumentActualWithin(entry.Key, budget) || !plainArgumentActualWithin(entry.Value, budget) {
+				if entry == nil || !plainArgumentActualWithin(entry.Key, budget, validUTF8) || !plainArgumentActualWithin(entry.Value, budget, validUTF8) {
 					return false
 				}
 			}
 		}
 		return true
 	case *coll.Vector:
-		return value == nil || plainArgumentActualWithin(value.Metadata, budget) && plainArgumentValues(value.Items, budget)
+		return value == nil || plainArgumentActualWithin(value.Metadata, budget, validUTF8) && plainArgumentValues(value.Items, budget, validUTF8)
 	case *coll.List:
-		return value == nil || plainArgumentActualWithin(value.Metadata, budget) && plainArgumentValues(value.Items, budget)
+		return value == nil || plainArgumentActualWithin(value.Metadata, budget, validUTF8) && plainArgumentValues(value.Items, budget, validUTF8)
 	case *coll.Set:
 		if value == nil {
 			return true
 		}
-		if !plainArgumentActualWithin(value.Metadata, budget) || !plainArgumentValues(value.Order, budget) {
+		if !plainArgumentActualWithin(value.Metadata, budget, validUTF8) || !plainArgumentValues(value.Order, budget, validUTF8) {
 			return false
 		}
 		for _, bucket := range value.Buckets {
-			if !plainArgumentValues(bucket, budget) {
+			if !plainArgumentValues(bucket, budget, validUTF8) {
 				return false
 			}
 		}
@@ -198,9 +211,9 @@ func plainArgumentActualWithin(value types.Value, budget *int) bool {
 	}
 }
 
-func plainArgumentValues(values []types.Value, budget *int) bool {
+func plainArgumentValues(values []types.Value, budget *int, validUTF8 *bool) bool {
 	for _, value := range values {
-		if !plainArgumentActualWithin(value, budget) {
+		if !plainArgumentActualWithin(value, budget, validUTF8) {
 			return false
 		}
 	}

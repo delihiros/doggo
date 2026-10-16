@@ -11,8 +11,8 @@ func TestString(t *testing.T) {
 		{"simple string", String("foo"), `"foo"`},
 		{"empty string", String(""), `""`},
 		{"string with spaces", String("foo bar"), `"foo bar"`},
-		{"string with quotes", String(`foo"bar`), `"foo"bar"`},
-		{"string with backslash", String(`foo\bar`), `"foo\bar"`},
+		{"string with quotes", String(`foo"bar`), `"foo\"bar"`},
+		{"string with backslash", String(`foo\bar`), `"foo\\bar"`},
 	}
 
 	for _, tt := range tests {
@@ -37,6 +37,7 @@ func TestString_Display(t *testing.T) {
 		{"empty string", String(""), ""},
 		{"string with spaces", String("foo bar"), "foo bar"},
 		{"string with quotes", String(`foo"bar`), `foo"bar`},
+		{"string with escapes", String("a\\b\n\t\x00日本語🙂"), "a\\b\n\t\x00日本語🙂"},
 	}
 
 	for _, tt := range tests {
