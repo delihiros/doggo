@@ -8,6 +8,13 @@ updates:
     directory: /editors/vscode
     schedule:
       interval: weekly
+    ignore:
+      # Raising the supported editor floor requires a deliberate migration.
+      - dependency-name: vscode-languageclient
+        update-types: [version-update:semver-major]
+      # Type-check against the oldest supported VS Code API; allow patch fixes.
+      - dependency-name: "@types/vscode"
+        update-types: [version-update:semver-major, version-update:semver-minor]
   - package-ecosystem: github-actions
     directory: /
     schedule:

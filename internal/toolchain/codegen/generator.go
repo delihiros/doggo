@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"go/constant"
 	"go/format"
+	"go/token"
 	"go/types"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,7 +35,7 @@ import (
 	"reflect"
 {{- range .Pkgs }}
 	{{- if ne .PkgPath "reflect" }}
-	"{{ .PkgPath }}"
+	{{ if .Exports }}{{ .Name }}{{ else }}_{{ end }} "{{ .PkgPath }}"
 	{{- end }}
 {{- end }}
 )
@@ -108,6 +111,21 @@ type importSet struct {
 	byPath     map[string]ImportInfo
 	pathByName map[string]string
 	fixed      map[string]struct{}
+}
+
+func newInteropImportSet() *importSet {
+	imports := &importSet{
+		byPath:     map[string]ImportInfo{"reflect": {Alias: "reflect", Path: "reflect"}},
+		pathByName: map[string]string{"reflect": "reflect"},
+		fixed:      map[string]struct{}{"reflect": {}},
+	}
+	for _, name := range types.Universe.Names() {
+		imports.reserve(name)
+	}
+	for _, name := range []string{"RegisterPackage", "init"} {
+		imports.reserve(name)
+	}
+	return imports
 }
 
 func newImportSet() *importSet {
@@ -491,6 +509,34 @@ func isSupportedInteropType(typeName *types.TypeName) bool {
 	return true
 }
 
+// Constants assigned to interface{} use their default Go type. A valid native
+// constant may exceed that type, even though it can be used in other contexts.
+func isSupportedInteropConstant(value *types.Const, sizes types.Sizes) bool {
+	basic, ok := value.Type().Underlying().(*types.Basic)
+	if !ok || basic.Info()&types.IsUntyped == 0 {
+		return true
+	}
+	switch basic.Kind() {
+	case types.UntypedInt, types.UntypedRune:
+		bits := int64(32) // The default type of an untyped rune is always int32.
+		if basic.Kind() == types.UntypedInt {
+			bits = sizes.Sizeof(types.Typ[types.Int]) * 8
+		}
+		limit := constant.Shift(constant.MakeInt64(1), token.SHL, uint(bits-1))
+		return constant.Compare(value.Val(), token.GEQ, constant.UnaryOp(token.SUB, limit, 0)) &&
+			constant.Compare(value.Val(), token.LSS, limit)
+	case types.UntypedFloat:
+		// Inexact finite rounding is valid when defaulting to float64.
+		rounded, _ := constant.Float64Val(value.Val())
+		return !math.IsInf(rounded, 0)
+	case types.UntypedComplex:
+		realPart, _ := constant.Float64Val(constant.Real(value.Val()))
+		imagPart, _ := constant.Float64Val(constant.Imag(value.Val()))
+		return !math.IsInf(realPart, 0) && !math.IsInf(imagPart, 0)
+	}
+	return true
+}
+
 func generateInteropFile(projectRoot, output string, targetPkgs []string) error {
 	output, outputRel, err := containedOutput(projectRoot, output)
 	if err != nil {
@@ -526,10 +572,14 @@ func generateInteropFileRoot(root *os.Root, projectRoot, output, outputRel strin
 	if isolated {
 		filteredEnv = append(filteredEnv, "GOWORK=off")
 	}
+	loadDir, err := packageLoadDir(projectRoot, filteredEnv)
+	if err != nil {
+		return err
+	}
 
 	cfg := &packages.Config{
 		Mode:       packages.NeedName | packages.NeedTypes | packages.NeedTypesSizes,
-		Dir:        projectRoot,
+		Dir:        loadDir,
 		Env:        filteredEnv,
 		Tests:      false,
 		BuildFlags: moduleBuildFlags(isolated),
@@ -556,10 +606,19 @@ func generateInteropFileRoot(root *os.Root, projectRoot, output, outputRel strin
 		}
 	}
 
+	// Allocate aliases in path order so query order cannot change the registry.
+	sort.Slice(pkgs, func(i, j int) bool { return pkgs[i].PkgPath < pkgs[j].PkgPath })
+	imports := newInteropImportSet()
+	seen := make(map[string]bool, len(pkgs))
 	var data []PkgData
 	for _, pkg := range pkgs {
+		if seen[pkg.PkgPath] {
+			continue
+		}
+		seen[pkg.PkgPath] = true
+		alias := imports.add(pkg.PkgPath, pkg.Name)
 		pData := PkgData{
-			Name:    pkg.Name,
+			Name:    alias,
 			PkgPath: pkg.PkgPath,
 		}
 
@@ -579,7 +638,7 @@ func generateInteropFileRoot(root *os.Root, projectRoot, output, outputRel strin
 				case *types.Struct, *types.Interface:
 					pData.Exports = append(pData.Exports, ExportData{
 						Name:    name,
-						PkgName: pkg.Name,
+						PkgName: alias,
 						IsType:  true,
 					})
 				case *types.Basic:
@@ -589,7 +648,7 @@ func generateInteropFileRoot(root *os.Root, projectRoot, output, outputRel strin
 						}
 						pData.Exports = append(pData.Exports, ExportData{
 							Name:    name,
-							PkgName: pkg.Name,
+							PkgName: alias,
 							IsType:  true,
 						})
 					}
@@ -605,22 +664,22 @@ func generateInteropFileRoot(root *os.Root, projectRoot, output, outputRel strin
 				}
 				pData.Exports = append(pData.Exports, ExportData{
 					Name:    name,
-					PkgName: pkg.Name,
+					PkgName: alias,
 					IsType:  false,
 				})
 			case *types.Var:
 				pData.Exports = append(pData.Exports, ExportData{
 					Name:    name,
-					PkgName: pkg.Name,
+					PkgName: alias,
 					IsType:  false,
 				})
 			case *types.Const:
-				if name == "MaxUint" || name == "MaxUint64" {
+				if !isSupportedInteropConstant(v, pkg.TypesSizes) {
 					continue
 				}
 				pData.Exports = append(pData.Exports, ExportData{
 					Name:    name,
-					PkgName: pkg.Name,
+					PkgName: alias,
 					IsType:  false,
 				})
 			}
@@ -861,9 +920,13 @@ func generateReifyFileRoot(root *os.Root, moduleRoot, output, outputRel string, 
 		}
 		env = append(filteredEnv, "GOWORK=off")
 	}
+	loadDir, err := packageLoadDir(moduleRoot, env)
+	if err != nil {
+		return nil, err
+	}
 	cfg := &packages.Config{
 		Mode:       packages.NeedName | packages.NeedTypes | packages.NeedTypesSizes,
-		Dir:        moduleRoot,
+		Dir:        loadDir,
 		Env:        env,
 		Tests:      false,
 		BuildFlags: moduleBuildFlags(isolated),
@@ -1092,7 +1155,15 @@ func containedOutput(moduleRoot, output string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	rootAbs, err = project.NormalizeSystemPath(rootAbs)
+	if err != nil {
+		return "", "", err
+	}
 	outputAbs, err := filepath.Abs(output)
+	if err != nil {
+		return "", "", err
+	}
+	outputAbs, err = project.NormalizeSystemPath(outputAbs)
 	if err != nil {
 		return "", "", err
 	}
@@ -1107,6 +1178,14 @@ func containedOutput(moduleRoot, output string) (string, string, error) {
 }
 
 func validateGeneratedPackage(moduleRoot, output string, source []byte, isolated bool) error {
+	moduleRoot, err := project.NormalizeSystemPath(moduleRoot)
+	if err != nil {
+		return err
+	}
+	output, err = project.NormalizeSystemPath(output)
+	if err != nil {
+		return err
+	}
 	dirRel, err := filepath.Rel(moduleRoot, filepath.Dir(output))
 	if err != nil {
 		return err
@@ -1125,14 +1204,21 @@ func validateGeneratedPackage(moduleRoot, output string, source []byte, isolated
 		}
 		env = append(filtered, "GOWORK=off")
 	}
+	loadDir, err := packageLoadDir(moduleRoot, env)
+	if err != nil {
+		return err
+	}
+	// The overlay must use the same spelling as Go's workspace module root.
+	// Compiled file ownership is still compared using canonical paths below.
+	loadOutput := filepath.Join(loadDir, dirRel, filepath.Base(output))
 	pkgs, loadErr := packages.Load(&packages.Config{
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
 			packages.NeedImports | packages.NeedDeps | packages.NeedTypes | packages.NeedTypesSizes,
-		Dir:        moduleRoot,
+		Dir:        loadDir,
 		Env:        env,
 		Tests:      false,
 		BuildFlags: moduleBuildFlags(isolated),
-		Overlay:    map[string][]byte{output: source},
+		Overlay:    map[string][]byte{loadOutput: source},
 	}, pattern)
 	var diagnostics []string
 	if loadErr != nil {
@@ -1149,7 +1235,11 @@ func validateGeneratedPackage(moduleRoot, output string, source []byte, isolated
 	compiledPackages := 0
 	for _, pkg := range pkgs {
 		for _, file := range pkg.CompiledGoFiles {
-			if filepath.Clean(file) == output {
+			file, err := project.NormalizeSystemPath(filepath.Clean(file))
+			if err != nil {
+				return err
+			}
+			if file == output {
 				compiledPackages++
 				break
 			}

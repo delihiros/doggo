@@ -106,15 +106,15 @@ func TestRunnerCompileServicesPreserveSourceFormOffsetsForIntrospection(t *testi
 	if err != nil {
 		t.Fatalf("source-str* failed: %v", err)
 	}
-	if !strings.Contains(result.String(), `(def ^{:doc "double value"} my-fn (fn [x] (* x 2)))`) {
-		t.Fatalf("expected original definition form, got %s", result.String())
+	if !strings.Contains(mustString(t, result), `(def ^{:doc "double value"} my-fn (fn [x] (* x 2)))`) {
+		t.Fatalf("expected original definition form, got %s", mustString(t, result))
 	}
 
 	docResult, err := runner.Run(`(doc* 'my-fn)`)
 	if err != nil {
 		t.Fatalf("doc* failed: %v", err)
 	}
-	if !strings.Contains(docResult.String(), "src/my_app.dog:2:1") {
-		t.Fatalf("expected source span metadata to survive compile path, got %s", docResult.String())
+	if !strings.Contains(mustString(t, docResult), "src/my_app.dog:2:1") {
+		t.Fatalf("expected source span metadata to survive compile path, got %s", mustString(t, docResult))
 	}
 }

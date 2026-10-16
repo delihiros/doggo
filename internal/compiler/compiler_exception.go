@@ -23,6 +23,49 @@ type catchClauseFormInfo struct {
 	bodyStart int
 }
 
+type tryRegion struct {
+	finallyClause *sexpr.List
+	symbolTable   *SymbolTable
+}
+
+func (c *Compiler) withTryRegion(finallyClause *sexpr.List, compile func() error) error {
+	scopeIndex := c.scopeIndex
+	regions := c.scopes[scopeIndex].tryRegions
+	c.scopes[scopeIndex].tryRegions = append(regions, tryRegion{
+		finallyClause: finallyClause,
+		symbolTable:   c.symbolTable,
+	})
+	defer func() { c.scopes[scopeIndex].tryRegions = regions }()
+	return compile()
+}
+
+func (c *Compiler) compileRecurTryCleanup(targetDepth int) error {
+	scopeIndex := c.scopeIndex
+	regions := c.scopes[scopeIndex].tryRegions
+	previousSymbols := c.symbolTable
+	defer func() {
+		c.scopes[scopeIndex].tryRegions = regions
+		c.symbolTable = previousSymbols
+	}()
+	for i := len(regions) - 1; i >= targetDepth; i-- {
+		c.emit(opcode.OpEndTry)
+		// Finally executes outside its own handler, with the lexical bindings
+		// visible at try entry. Limit capacity so nested try cannot overwrite
+		// the saved region stack needed by other compiled branches.
+		c.scopes[scopeIndex].tryRegions = regions[:i:i]
+		if regions[i].finallyClause != nil {
+			c.symbolTable = regions[i].symbolTable
+			if err := c.withBlockScope(func() error {
+				return c.compileFinallyBodyForm(regions[i].finallyClause)
+			}); err != nil {
+				return err
+			}
+			c.emit(opcode.OpPop)
+		}
+	}
+	return nil
+}
+
 func (c *Compiler) compileTryForm(list *sexpr.List) error {
 	if len(list.Items) < 2 {
 		return c.newCompileError("try requires body")
@@ -79,13 +122,10 @@ endLoop:
 	}
 
 	tryPos := c.emit(opcode.OpTry, 9999)
-	for i, expr := range body {
-		if err := c.CompileForm(expr); err != nil {
-			return err
-		}
-		if i < len(body)-1 {
-			c.emit(opcode.OpPop)
-		}
+	if err := c.withTryRegion(finallyClause, func() error {
+		return c.compileFormBody(body)
+	}); err != nil {
+		return err
 	}
 
 	c.emit(opcode.OpEndTry)
@@ -109,7 +149,7 @@ endLoop:
 			if err != nil {
 				return err
 			}
-			c.emitSetSymbol(excSym)
+			c.emitInitSymbol(excSym)
 			return c.compileRethrowWithFinallyForm(excSym, finallyClause)
 		}); err != nil {
 			return err
@@ -148,7 +188,7 @@ func (c *Compiler) compileCatchClausesForm(catches []catchClauseFormInfo, finall
 		if err != nil {
 			return err
 		}
-		c.emitSetSymbol(excSym)
+		c.emitInitSymbol(excSym)
 		return c.compileCatchHandlerForm(catches[0], excSym, finallyClause)
 	})
 }
@@ -156,21 +196,37 @@ func (c *Compiler) compileCatchClausesForm(catches []catchClauseFormInfo, finall
 func (c *Compiler) compileCatchHandlerForm(info catchClauseFormInfo, excSym Symbol, finallyClause *sexpr.List) error {
 	return c.withBlockScope(func() error {
 		var resultSym Symbol
+		var catchTryPos int
 		if finallyClause != nil {
 			var err error
 			resultSym, err = c.defineHiddenTemp("catch_result")
 			if err != nil {
 				return err
 			}
+			// The original try handler has already been removed on entry to catch.
+			catchTryPos = c.emit(opcode.OpTry, 9999)
 		}
 
 		if err := c.withBlockScope(func() error {
+			if finallyClause != nil {
+				scopeIndex := c.scopeIndex
+				previousDepth := c.scopes[scopeIndex].catchFinallyLoopDepth
+				c.scopes[scopeIndex].catchFinallyLoopDepth = len(c.loopStack)
+				defer func() {
+					c.scopes[scopeIndex].catchFinallyLoopDepth = previousDepth
+				}()
+			}
 			symbol, err := c.symbolTable.DefineChecked(string(info.varSymbol))
 			if err != nil {
 				return c.newCompileError("%s", err)
 			}
 			c.loadSymbol(excSym)
-			c.emitSetSymbol(symbol)
+			c.emitInitSymbol(symbol)
+			if finallyClause != nil {
+				return c.withTryRegion(finallyClause, func() error {
+					return c.compileCatchBodyForm(info, resultSym)
+				})
+			}
 			return c.compileCatchBodyForm(info, resultSym)
 		}); err != nil {
 			return err
@@ -180,11 +236,21 @@ func (c *Compiler) compileCatchHandlerForm(info catchClauseFormInfo, excSym Symb
 			return nil
 		}
 
+		// Finally must run outside this guard so its own exception propagates once.
+		c.emit(opcode.OpEndTry)
 		if err := c.compileFinallyBodyForm(finallyClause); err != nil {
 			return err
 		}
 		c.emit(opcode.OpPop)
 		c.loadSymbol(resultSym)
+		jumpToEndPos := c.emit(opcode.OpJump, 9999)
+
+		c.changeOperand(catchTryPos, len(c.currentInstructions()))
+		c.emitInitSymbol(excSym)
+		if err := c.compileRethrowWithFinallyForm(excSym, finallyClause); err != nil {
+			return err
+		}
+		c.changeOperand(jumpToEndPos, len(c.currentInstructions()))
 		return nil
 	})
 }
@@ -201,7 +267,7 @@ func (c *Compiler) compileCatchBodyForm(info catchClauseFormInfo, resultSym Symb
 	}
 
 	if resultSym.Scope != "" {
-		c.emitSetSymbol(resultSym)
+		c.emitInitSymbol(resultSym)
 	}
 
 	return nil
@@ -244,7 +310,7 @@ func (c *Compiler) compileFinallyPreservingStackResultForm(prefix string, finall
 		if err != nil {
 			return err
 		}
-		c.emitSetSymbol(resultSym)
+		c.emitInitSymbol(resultSym)
 		if err := c.compileFinallyBodyForm(finallyClause); err != nil {
 			return err
 		}

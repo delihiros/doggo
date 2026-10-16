@@ -353,6 +353,10 @@ func TestReleaseServiceKeygenFallsBackToCwdWhenProjectRootMissing(t *testing.T) 
 	if err := os.Chdir(projectRoot); err != nil {
 		t.Fatalf("chdir: %v", err)
 	}
+	projectRoot, err = os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var gotKeyDir string
 	service := Service{

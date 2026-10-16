@@ -13,6 +13,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"doggo/internal/compiler"
 	"doggo/internal/lexer"
 	"doggo/internal/project"
 	"doggo/internal/syntax/frontend"
@@ -496,9 +497,12 @@ type formattingParams struct {
 }
 
 type symbolOccurrence struct {
-	URI     string
-	Literal string
-	Range   lspRange
+	URI         string
+	Literal     string
+	Range       lspRange
+	namespace   string
+	locals      map[string]struct{}
+	declaration bool
 }
 
 type semanticTokensParams struct {
@@ -605,7 +609,9 @@ func (s *Server) handleReferences(msg message) error {
 		return s.respond(msg.ID, []any{})
 	}
 
-	currentNS := s.state.index.NamespaceForURI(params.TextDocument.URI)
+	currentNS := s.state.index.NamespaceAtPosition(params.TextDocument.URI, toolindex.Position{
+		Line: params.Position.Line + 1, Column: params.Position.Character + 1,
+	})
 	def, found := s.state.index.ResolveDefinition(currentNS, symbol)
 	if !found {
 		return s.respond(msg.ID, []any{})
@@ -654,7 +660,9 @@ func (s *Server) handleRename(msg message) error {
 		})
 	}
 
-	currentNS := s.state.index.NamespaceForURI(params.TextDocument.URI)
+	currentNS := s.state.index.NamespaceAtPosition(params.TextDocument.URI, toolindex.Position{
+		Line: params.Position.Line + 1, Column: params.Position.Character + 1,
+	})
 	def, found := s.state.index.ResolveDefinition(currentNS, symbol)
 	if !found {
 		return s.respond(msg.ID, map[string]any{
@@ -682,6 +690,25 @@ func (s *Server) handleRename(msg message) error {
 	}
 	if !selectedOccurrence {
 		return s.respond(msg.ID, map[string]any{"changes": map[string]any{}})
+	}
+	if newName != def.Name {
+		if compiler.IsUnshadowableSpecialForm(newName) {
+			return s.respondError(msg.ID, lspErrorInvalidParams, "rename destination is reserved compiler syntax")
+		}
+		if s.state.index.HasGlobalBinding(def.Namespace, newName) {
+			return s.respondError(msg.ID, lspErrorInvalidParams, "rename destination already resolves to a global symbol")
+		}
+		for _, occ := range occurrences {
+			if strings.Contains(occ.Literal, "/") || occ.declaration {
+				continue
+			}
+			if _, captured := occ.locals[newName]; captured {
+				return s.respondError(msg.ID, lspErrorInvalidParams, "rename destination would capture a local binding")
+			}
+			if s.state.index.HasGlobalBinding(occ.namespace, newName) {
+				return s.respondError(msg.ID, lspErrorInvalidParams, "rename destination already resolves to a global symbol")
+			}
+		}
 	}
 	changes := make(map[string][]map[string]any)
 	for _, occ := range occurrences {
@@ -1997,7 +2024,6 @@ func (s *Server) collectSymbolOccurrences(def toolindex.SymbolDef, includeDeclar
 			source,
 			tokens,
 			s.state.index,
-			s.state.index.NamespaceForURI(uri),
 			def,
 			candidates,
 			includeDeclaration,
@@ -2023,7 +2049,6 @@ type occurrenceCollector struct {
 	tokens             []lexer.Token
 	pos                int
 	idx                *toolindex.WorkspaceIndex
-	currentNS          string
 	target             toolindex.SymbolDef
 	candidates         map[string]struct{}
 	includeDeclaration bool
@@ -2042,7 +2067,6 @@ func newOccurrenceCollector(
 	source string,
 	tokens []lexer.Token,
 	idx *toolindex.WorkspaceIndex,
-	currentNS string,
 	target toolindex.SymbolDef,
 	candidates map[string]struct{},
 	includeDeclaration bool,
@@ -2052,7 +2076,6 @@ func newOccurrenceCollector(
 		source:             source,
 		tokens:             tokens,
 		idx:                idx,
-		currentNS:          currentNS,
 		target:             target,
 		candidates:         candidates,
 		includeDeclaration: includeDeclaration,
@@ -2236,8 +2259,17 @@ func (c *occurrenceCollector) parseList(scope *occurrenceScope, quoted bool) {
 		c.parseDefLike(scope, quoted)
 	case "defn", "defmacro":
 		c.parseDefnLike(scope, quoted)
+	case "defrecord", "deftype":
+		c.parseRecordType(scope, quoted, head.Literal == "deftype")
+	case "defprotocol":
+		c.parseProtocol(scope, quoted)
 	case "fn":
 		c.parseFnLike(scope, quoted)
+	case "defmethod":
+		c.next()                   // defmethod
+		c.parseForm(scope, quoted) // multimethod and dispatch are evaluated outside the function
+		c.parseForm(scope, quoted)
+		c.parseFnTail(scope, quoted)
 	case "letfn":
 		c.parseLetfnLike(scope, quoted)
 	case "let", "loop", "doseq", "for":
@@ -2251,11 +2283,70 @@ func (c *occurrenceCollector) parseList(scope *occurrenceScope, quoted bool) {
 	case "quote", "syntax-quote", "unquote", "unquote-splicing", "splice-unquote":
 		c.next() // head
 		c.parseUntil(scope, true, lexer.RPAREN)
-	case "ns", "require", "import":
+	case "ns":
+		c.parseNamespaceDeclaration(scope)
+	case "import":
 		c.next() // head
-		c.parseUntil(scope, quoted, lexer.RPAREN)
+		c.parseUntil(scope, true, lexer.RPAREN)
 	default:
 		c.parseUntil(scope, quoted, lexer.RPAREN)
+	}
+}
+
+func (c *occurrenceCollector) parseNamespaceDeclaration(scope *occurrenceScope) {
+	c.next()                         // ns
+	c.pos = c.skipOneFormFrom(c.pos) // namespace name, including metadata
+	for !c.done() && c.peek().Type != lexer.RPAREN {
+		c.consumeMetadataPrefixes()
+		start := c.pos
+		if c.peek().Type != lexer.LPAREN {
+			c.pos = c.skipOneFormFrom(start)
+			continue
+		}
+		c.next()
+		if c.peek().Type != lexer.KEYWORD || c.peek().Literal != "require" {
+			c.pos = c.skipOneFormFrom(start)
+			continue
+		}
+		c.next() // :require
+		for !c.done() && c.peek().Type != lexer.RPAREN {
+			c.parseNamespaceRequireSpec(scope)
+		}
+		if c.peek().Type == lexer.RPAREN {
+			c.next()
+		}
+	}
+	if c.peek().Type == lexer.RPAREN {
+		c.next()
+	}
+}
+
+func (c *occurrenceCollector) parseNamespaceRequireSpec(scope *occurrenceScope) {
+	c.consumeMetadataPrefixes()
+	if c.peek().Type != lexer.LBRACKET {
+		c.pos = c.skipOneFormFrom(c.pos)
+		return
+	}
+	c.next() // [
+	namespace := c.next()
+	for !c.done() && c.peek().Type != lexer.RBRACKET {
+		option := c.next()
+		c.consumeMetadataPrefixes()
+		if option.Type == lexer.KEYWORD && option.Literal == "refer" &&
+			namespace.Type == lexer.IDENT && namespace.Literal == c.target.Namespace && c.peek().Type == lexer.LBRACKET {
+			c.next() // explicit :refer names identify globals from this namespace
+			for !c.done() && c.peek().Type != lexer.RBRACKET {
+				c.parseForm(scope, false)
+			}
+			if c.peek().Type == lexer.RBRACKET {
+				c.next()
+			}
+		} else {
+			c.pos = c.skipOneFormFrom(c.pos) // alias, namespace, and other option data are literal
+		}
+	}
+	if c.peek().Type == lexer.RBRACKET {
+		c.next()
 	}
 }
 
@@ -2265,6 +2356,70 @@ func (c *occurrenceCollector) parseDefLike(scope *occurrenceScope, quoted bool) 
 	if c.peek().Type == lexer.IDENT {
 		nameTok := c.next()
 		c.handleIdentifier(nameTok, scope, quoted, true, false)
+	}
+	c.parseUntil(scope, quoted, lexer.RPAREN)
+}
+
+func (c *occurrenceCollector) parseRecordType(scope *occurrenceScope, quoted, implicitFields bool) {
+	c.next() // defrecord/deftype
+	c.consumeMetadataPrefixes()
+	if c.peek().Type == lexer.IDENT {
+		c.next() // type name is a declaration, not a reference to another global
+	}
+	c.consumeMetadataPrefixes()
+	var fields []string
+	if c.peek().Type == lexer.LBRACKET {
+		fields = c.parseBindingPatternNames()
+	}
+	for !c.done() && c.peek().Type != lexer.RPAREN {
+		c.consumeMetadataPrefixes()
+		if c.peek().Type == lexer.LPAREN {
+			methodScope := newOccurrenceScope(scope)
+			// The compiler wraps deftype method bodies in field-binding lets.
+			// Defrecord bodies receive only their explicit method parameters.
+			if implicitFields {
+				for _, name := range fields {
+					methodScope.define(name)
+				}
+			}
+			c.parseProtocolMethod(methodScope, quoted)
+		} else {
+			c.parseForm(scope, quoted) // protocol expressions are evaluated globals
+		}
+	}
+	if c.peek().Type == lexer.RPAREN {
+		c.next()
+	}
+}
+
+func (c *occurrenceCollector) parseProtocol(scope *occurrenceScope, quoted bool) {
+	c.next() // defprotocol
+	c.consumeMetadataPrefixes()
+	if c.peek().Type == lexer.IDENT {
+		c.next() // protocol declaration
+	}
+	for !c.done() && c.peek().Type != lexer.RPAREN {
+		c.consumeMetadataPrefixes()
+		if c.peek().Type == lexer.LPAREN {
+			c.parseProtocolMethod(newOccurrenceScope(scope), quoted)
+		} else {
+			c.pos = c.skipOneFormFrom(c.pos)
+		}
+	}
+	if c.peek().Type == lexer.RPAREN {
+		c.next()
+	}
+}
+
+func (c *occurrenceCollector) parseProtocolMethod(scope *occurrenceScope, quoted bool) {
+	c.next() // method list open
+	c.consumeMetadataPrefixes()
+	if c.peek().Type == lexer.IDENT {
+		c.next() // method name is not an evaluated global reference
+	}
+	c.consumeMetadataPrefixes()
+	if c.peek().Type == lexer.LBRACKET {
+		c.parseParamVector(scope)
 	}
 	c.parseUntil(scope, quoted, lexer.RPAREN)
 }
@@ -2313,6 +2468,11 @@ func (c *occurrenceCollector) parseDefnLike(scope *occurrenceScope, quoted bool)
 
 func (c *occurrenceCollector) parseFnLike(scope *occurrenceScope, quoted bool) {
 	c.next() // fn
+	c.parseFnTail(scope, quoted)
+}
+
+// Defmethod compiles its tail as an fn, with the same optional name and arities.
+func (c *occurrenceCollector) parseFnTail(scope *occurrenceScope, quoted bool) {
 	fnName := ""
 	c.consumeMetadataPrefixes()
 	if c.peek().Type == lexer.IDENT {
@@ -2589,13 +2749,10 @@ func (c *occurrenceCollector) parseIfWhenLet(scope *occurrenceScope, quoted bool
 
 func (c *occurrenceCollector) parseCatchLike(scope *occurrenceScope, quoted bool) {
 	c.next() // catch
-	if c.peek().Type != lexer.RPAREN {
-		c.parseForm(scope, quoted) // exception type
-	}
 	child := newOccurrenceScope(scope)
-	if c.peek().Type == lexer.IDENT {
-		nameTok := c.next()
-		child.define(nameTok.Literal)
+	c.consumeMetadataPrefixes()
+	if c.peek().Type == lexer.LBRACKET {
+		c.parseParamVector(child)
 	}
 	c.parseUntil(child, quoted, lexer.RPAREN)
 }
@@ -2688,7 +2845,8 @@ func (c *occurrenceCollector) handleIdentifier(tok lexer.Token, scope *occurrenc
 	if !strings.Contains(literal, "/") && scope.resolve(literal) {
 		return
 	}
-	def, ok := c.idx.ResolveDefinition(c.currentNS, literal)
+	currentNS := c.idx.NamespaceAtPosition(c.uri, toolindex.PositionFromOffset(c.source, tok.Offset))
+	def, ok := c.idx.ResolveDefinition(currentNS, literal)
 	if !ok {
 		return
 	}
@@ -2706,9 +2864,20 @@ func (c *occurrenceCollector) handleIdentifier(tok lexer.Token, scope *occurrenc
 		return
 	}
 	c.seen[key] = struct{}{}
+	// Snapshot the bindings at the occurrence: later let initializers may add
+	// names to this scope that are not yet visible to this reference.
+	locals := make(map[string]struct{})
+	for current := scope; current != nil; current = current.parent {
+		for name := range current.symbols {
+			locals[name] = struct{}{}
+		}
+	}
 	c.occurrences = append(c.occurrences, symbolOccurrence{
-		URI:     c.uri,
-		Literal: literal,
+		URI:         c.uri,
+		Literal:     literal,
+		namespace:   currentNS,
+		locals:      locals,
+		declaration: isDeclaration,
 		Range: lspRange{
 			Start: start,
 			End:   end,
@@ -2750,28 +2919,27 @@ func (s *Server) referenceCandidatesForURI(uri string, def toolindex.SymbolDef) 
 		compilerQualified(def.Namespace, def.Name): {},
 	}
 
-	currentNS := s.state.index.NamespaceForURI(uri)
-	if currentNS == def.Namespace || uri == def.URI {
-		out[def.Name] = struct{}{}
-	}
-
-	info := s.state.index.NamespaceInfo(currentNS)
-	if info == nil {
-		return out
-	}
-
-	if targetNS, ok := info.Refers[def.Name]; ok && targetNS == def.Namespace {
-		out[def.Name] = struct{}{}
-	}
-	for _, ns := range info.ReferAll {
-		if ns == def.Namespace {
+	for _, currentNS := range s.state.index.NamespacesForURI(uri) {
+		if currentNS == def.Namespace {
 			out[def.Name] = struct{}{}
-			break
 		}
-	}
-	for alias, targetNS := range info.Aliases {
-		if targetNS == def.Namespace && alias != "" {
-			out[alias+"/"+def.Name] = struct{}{}
+		info := s.state.index.NamespaceInfo(currentNS)
+		if info == nil {
+			continue
+		}
+		if targetNS, ok := info.Refers[def.Name]; ok && targetNS == def.Namespace {
+			out[def.Name] = struct{}{}
+		}
+		for _, ns := range info.ReferAll {
+			if ns == def.Namespace {
+				out[def.Name] = struct{}{}
+				break
+			}
+		}
+		for alias, targetNS := range info.Aliases {
+			if targetNS == def.Namespace && alias != "" {
+				out[alias+"/"+def.Name] = struct{}{}
+			}
 		}
 	}
 
