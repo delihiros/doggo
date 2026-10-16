@@ -122,3 +122,16 @@ func (c *Compiler) loadSymbol(s Symbol) {
 		c.emit(opcode.OpGetBuiltin, s.Index)
 	}
 }
+
+// captureSymbol preserves shared letfn cells; ordinary symbol loads expose only
+// their values. Free variables must also retain cells for transitive captures.
+func (c *Compiler) captureSymbol(s Symbol) {
+	switch s.Scope {
+	case LocalScope:
+		c.emit(opcode.OpCaptureLocal, s.Index)
+	case FreeScope:
+		c.emit(opcode.OpCaptureFree, s.Index)
+	default:
+		c.loadSymbol(s)
+	}
+}

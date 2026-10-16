@@ -143,7 +143,7 @@ func (c *Compiler) compileFnFormDecl(fnName string, declItems []sexpr.Form) erro
 	instructions, lines, columns := c.leaveScope()
 
 	for _, s := range freeSymbols {
-		c.loadSymbol(s)
+		c.captureSymbol(s)
 	}
 
 	defaultArity := ArityInfo{NumParameters: 0}

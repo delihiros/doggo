@@ -484,12 +484,14 @@ func (vm *VM) Run() error {
 				vm.globals[globalIndex] = newVal
 			}
 
-		case opcode.OpGetLocal:
+		case opcode.OpGetLocal, opcode.OpCaptureLocal:
 			localIndex := opcode.ReadUint8(ins[ip+1:])
 			frame.ip += 1
-			// Cell は unwrap しない（クロージャキャプチャで Cell 自体を捕捉するため）
-			// executeCall で Cell は unwrap される
-			err = vm.push(vm.stack[frame.basePointer+int(localIndex)])
+			val := vm.stack[frame.basePointer+int(localIndex)]
+			if cell, ok := val.(*Cell); ok && op == opcode.OpGetLocal {
+				val = cell.Value
+			}
+			err = vm.push(val)
 
 		case opcode.OpInitLocal:
 			localIndex := opcode.ReadUint8(ins[ip+1:])
@@ -508,12 +510,11 @@ func (vm *VM) Run() error {
 				*slot = newVal
 			}
 
-		case opcode.OpGetFree:
+		case opcode.OpGetFree, opcode.OpCaptureFree:
 			freeIndex := opcode.ReadUint8(ins[ip+1:])
 			frame.ip += 1
 			val := frame.cl.Free[freeIndex]
-			// Cell透過: Cellなら中身を取り出す
-			if cell, ok := val.(*Cell); ok {
+			if cell, ok := val.(*Cell); ok && op == opcode.OpGetFree {
 				val = cell.Value
 			}
 			err = vm.push(val)

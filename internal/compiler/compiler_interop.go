@@ -137,7 +137,7 @@ func (c *Compiler) compileScopedBodyOperation(list *sexpr.List, formName string,
 	numLocals := c.symbolTable.NumLocals()
 	instructions, lines, columns := c.leaveScope()
 	for _, s := range freeSymbols {
-		c.loadSymbol(s)
+		c.captureSymbol(s)
 	}
 
 	compiledFn := newCompiledFunction(
