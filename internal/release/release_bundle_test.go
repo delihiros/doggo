@@ -1531,11 +1531,19 @@ func TestResolveProjectRelativePathErrors(t *testing.T) {
 	if err := os.WriteFile(outsideFile, []byte("artifact"), 0644); err != nil {
 		t.Fatalf("write outside file: %v", err)
 	}
+	canonicalOutsideFile, err := project.NormalizeSystemPath(outsideFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalOutsideDir, err := project.NormalizeSystemPath(outsideDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	if _, err := resolveProjectRelativePath(projectRoot, outsideFile); err == nil || !strings.Contains(err.Error(), "path "+filepath.ToSlash(outsideFile)+" is outside project root ") {
+	if _, err := resolveProjectRelativePath(projectRoot, outsideFile); err == nil || !strings.Contains(err.Error(), "path "+filepath.ToSlash(canonicalOutsideFile)+" is outside project root ") {
 		t.Fatalf("resolveProjectRelativePath outside path error = %v", err)
 	}
-	if _, err := resolveProjectRelativePath(projectRoot, outsideDir); err == nil || !strings.Contains(err.Error(), "path "+filepath.ToSlash(outsideDir)+" is outside project root ") {
+	if _, err := resolveProjectRelativePath(projectRoot, outsideDir); err == nil || !strings.Contains(err.Error(), "path "+filepath.ToSlash(canonicalOutsideDir)+" is outside project root ") {
 		t.Fatalf("resolveProjectRelativePath outside path error = %v", err)
 	}
 }

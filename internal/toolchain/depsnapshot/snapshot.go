@@ -358,6 +358,11 @@ func (s *snapshotter) snapshot(base *sourceNode, declaration string) (_ project.
 			if err != nil {
 				return project.LockDep{}, err
 			}
+			// The host replaces snapshots by their declared Go module path, so a
+			// different old-path alias could resolve to retained content instead.
+			if child.GoModule == "" || child.GoModule != replacement.Old.Path {
+				return project.LockDep{}, fmt.Errorf("local replacement in Go module %q: %q => %q declares Go module %q; replacement module paths must match", manifests.goModule, replacement.Old.Path, replacement.New.Path, child.GoModule)
+			}
 			from := filepath.Join("deps", "placeholder")
 			to := filepath.FromSlash(child.InstallDir)
 			relative, err := filepath.Rel(from, to)

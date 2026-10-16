@@ -156,15 +156,26 @@ func (c *Compiler) compileCatchClausesForm(catches []catchClauseFormInfo, finall
 func (c *Compiler) compileCatchHandlerForm(info catchClauseFormInfo, excSym Symbol, finallyClause *sexpr.List) error {
 	return c.withBlockScope(func() error {
 		var resultSym Symbol
+		var catchTryPos int
 		if finallyClause != nil {
 			var err error
 			resultSym, err = c.defineHiddenTemp("catch_result")
 			if err != nil {
 				return err
 			}
+			// The original try handler has already been removed on entry to catch.
+			catchTryPos = c.emit(opcode.OpTry, 9999)
 		}
 
 		if err := c.withBlockScope(func() error {
+			if finallyClause != nil {
+				scopeIndex := c.scopeIndex
+				previousDepth := c.scopes[scopeIndex].catchFinallyLoopDepth
+				c.scopes[scopeIndex].catchFinallyLoopDepth = len(c.loopStack)
+				defer func() {
+					c.scopes[scopeIndex].catchFinallyLoopDepth = previousDepth
+				}()
+			}
 			symbol, err := c.symbolTable.DefineChecked(string(info.varSymbol))
 			if err != nil {
 				return c.newCompileError("%s", err)
@@ -180,11 +191,21 @@ func (c *Compiler) compileCatchHandlerForm(info catchClauseFormInfo, excSym Symb
 			return nil
 		}
 
+		// Finally must run outside this guard so its own exception propagates once.
+		c.emit(opcode.OpEndTry)
 		if err := c.compileFinallyBodyForm(finallyClause); err != nil {
 			return err
 		}
 		c.emit(opcode.OpPop)
 		c.loadSymbol(resultSym)
+		jumpToEndPos := c.emit(opcode.OpJump, 9999)
+
+		c.changeOperand(catchTryPos, len(c.currentInstructions()))
+		c.emitSetSymbol(excSym)
+		if err := c.compileRethrowWithFinallyForm(excSym, finallyClause); err != nil {
+			return err
+		}
+		c.changeOperand(jumpToEndPos, len(c.currentInstructions()))
 		return nil
 	})
 }
