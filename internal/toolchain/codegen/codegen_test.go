@@ -287,12 +287,18 @@ func TestGenerateInteropFileReturnsErrorWhenNoPackagesRequested(t *testing.T) {
 }
 
 func TestGeneratorCLIsUseGoWorkspaceModules(t *testing.T) {
-	const (
-		pkg           = "example.com/greeter"
-		interfaceName = pkg + ".Greeter"
-	)
-
 	tempRoot := t.TempDir()
+	appRoot := writeGeneratorWorkspaceFixture(t, tempRoot)
+	t.Setenv("GOWORK", filepath.Join(tempRoot, "go.work"))
+	t.Setenv("GOPROXY", "off")
+	restoreWorkingDir := chdirForTest(t, appRoot)
+	defer restoreWorkingDir()
+	assertWorkspaceGenerators(t, appRoot)
+}
+
+func writeGeneratorWorkspaceFixture(t *testing.T, tempRoot string) string {
+	t.Helper()
+	const pkg = "example.com/greeter"
 	appRoot := filepath.Join(tempRoot, "app")
 	greeterRoot := filepath.Join(tempRoot, "greeter")
 	for _, dir := range []string{appRoot, greeterRoot} {
@@ -317,10 +323,15 @@ func TestGeneratorCLIsUseGoWorkspaceModules(t *testing.T) {
 		"internal/reify/base.go":       "package reify\n",
 	})
 
-	t.Setenv("GOWORK", filepath.Join(tempRoot, "go.work"))
-	t.Setenv("GOPROXY", "off")
-	restoreWorkingDir := chdirForTest(t, appRoot)
-	defer restoreWorkingDir()
+	return appRoot
+}
+
+func assertWorkspaceGenerators(t *testing.T, appRoot string) {
+	t.Helper()
+	const (
+		pkg           = "example.com/greeter"
+		interfaceName = pkg + ".Greeter"
+	)
 
 	interopPath := filepath.Join(appRoot, "internal", "interop", "generated.go")
 	if err := RunInteropGenCLI([]string{"-o", interopPath, pkg}); err != nil {

@@ -49,6 +49,10 @@ func TestRunReleaseCommandUsesToolchainReleaseService(t *testing.T) {
 	if err := os.Chdir(projectRoot); err != nil {
 		t.Fatalf("chdir: %v", err)
 	}
+	projectRoot, err = os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	app := NewApp("1.0.0", []string{
 		"release", "bundle",
@@ -298,6 +302,10 @@ func TestRunReleaseKeygenCommandUsesParsedServiceOptions(t *testing.T) {
 	})
 	if err := os.Chdir(projectRoot); err != nil {
 		t.Fatalf("chdir: %v", err)
+	}
+	projectRoot, err = os.Getwd()
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	if err := app.Run(); err != nil {

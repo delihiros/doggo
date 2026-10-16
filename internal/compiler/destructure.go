@@ -108,7 +108,7 @@ func (c *Compiler) compileDestructuringBindPlan(pattern *expand.DestructurePlan)
 
 // compileSeqDestructurePlan is the form-native version of sequence destructuring.
 func (c *Compiler) compileSeqDestructurePlan(vec *expand.DestructureVectorPlan) error {
-	if len(vec.Items) == 0 {
+	if len(vec.Items) == 0 && vec.Rest == nil && vec.As == nil {
 		c.emit(opcode.OpPop)
 		return nil
 	}

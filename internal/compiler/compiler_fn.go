@@ -69,11 +69,12 @@ func (c *Compiler) compileFnFormDecl(fnName string, declItems []sexpr.Form) erro
 						}
 					} else {
 						syntheticName := gensym("rest")
-						if _, err := c.symbolTable.DefineChecked(syntheticName); err != nil {
+						syntheticSymbol, err := c.symbolTable.DefineChecked(syntheticName)
+						if err != nil {
 							return c.newCompileError("%s", err)
 						}
 						destructurePatterns = append(destructurePatterns, fnFormDestructurePattern{
-							localIndex: i + 1,
+							localIndex: syntheticSymbol.Index,
 							pattern:    restParam,
 						})
 					}
