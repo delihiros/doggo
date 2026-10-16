@@ -13,6 +13,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"doggo/internal/compiler"
 	"doggo/internal/lexer"
 	"doggo/internal/project"
 	"doggo/internal/syntax/frontend"
@@ -691,6 +692,9 @@ func (s *Server) handleRename(msg message) error {
 		return s.respond(msg.ID, map[string]any{"changes": map[string]any{}})
 	}
 	if newName != def.Name {
+		if compiler.IsUnshadowableSpecialForm(newName) {
+			return s.respondError(msg.ID, lspErrorInvalidParams, "rename destination is reserved compiler syntax")
+		}
 		if s.state.index.HasGlobalBinding(def.Namespace, newName) {
 			return s.respondError(msg.ID, lspErrorInvalidParams, "rename destination already resolves to a global symbol")
 		}
@@ -2261,6 +2265,11 @@ func (c *occurrenceCollector) parseList(scope *occurrenceScope, quoted bool) {
 		c.parseProtocol(scope, quoted)
 	case "fn":
 		c.parseFnLike(scope, quoted)
+	case "defmethod":
+		c.next()                   // defmethod
+		c.parseForm(scope, quoted) // multimethod and dispatch are evaluated outside the function
+		c.parseForm(scope, quoted)
+		c.parseFnTail(scope, quoted)
 	case "letfn":
 		c.parseLetfnLike(scope, quoted)
 	case "let", "loop", "doseq", "for":
@@ -2274,11 +2283,67 @@ func (c *occurrenceCollector) parseList(scope *occurrenceScope, quoted bool) {
 	case "quote", "syntax-quote", "unquote", "unquote-splicing", "splice-unquote":
 		c.next() // head
 		c.parseUntil(scope, true, lexer.RPAREN)
-	case "ns", "require", "import":
+	case "ns":
+		c.parseNamespaceDeclaration(scope)
+	case "import":
 		c.next() // head
-		c.parseUntil(scope, quoted, lexer.RPAREN)
+		c.parseUntil(scope, true, lexer.RPAREN)
 	default:
 		c.parseUntil(scope, quoted, lexer.RPAREN)
+	}
+}
+
+func (c *occurrenceCollector) parseNamespaceDeclaration(scope *occurrenceScope) {
+	c.next()                         // ns
+	c.pos = c.skipOneFormFrom(c.pos) // namespace name, including metadata
+	for !c.done() && c.peek().Type != lexer.RPAREN {
+		start := c.pos
+		if c.peek().Type != lexer.LPAREN {
+			c.pos = c.skipOneFormFrom(start)
+			continue
+		}
+		c.next()
+		if c.peek().Type != lexer.KEYWORD || c.peek().Literal != "require" {
+			c.pos = c.skipOneFormFrom(start)
+			continue
+		}
+		c.next() // :require
+		for !c.done() && c.peek().Type != lexer.RPAREN {
+			c.parseNamespaceRequireSpec(scope)
+		}
+		if c.peek().Type == lexer.RPAREN {
+			c.next()
+		}
+	}
+	if c.peek().Type == lexer.RPAREN {
+		c.next()
+	}
+}
+
+func (c *occurrenceCollector) parseNamespaceRequireSpec(scope *occurrenceScope) {
+	if c.peek().Type != lexer.LBRACKET {
+		c.pos = c.skipOneFormFrom(c.pos)
+		return
+	}
+	c.next() // [
+	namespace := c.next()
+	for !c.done() && c.peek().Type != lexer.RBRACKET {
+		option := c.next()
+		if option.Type == lexer.KEYWORD && option.Literal == "refer" &&
+			namespace.Type == lexer.IDENT && namespace.Literal == c.target.Namespace && c.peek().Type == lexer.LBRACKET {
+			c.next() // explicit :refer names identify globals from this namespace
+			for !c.done() && c.peek().Type != lexer.RBRACKET {
+				c.parseForm(scope, false)
+			}
+			if c.peek().Type == lexer.RBRACKET {
+				c.next()
+			}
+		} else {
+			c.pos = c.skipOneFormFrom(c.pos) // alias, namespace, and other option data are literal
+		}
+	}
+	if c.peek().Type == lexer.RBRACKET {
+		c.next()
 	}
 }
 
@@ -2400,6 +2465,11 @@ func (c *occurrenceCollector) parseDefnLike(scope *occurrenceScope, quoted bool)
 
 func (c *occurrenceCollector) parseFnLike(scope *occurrenceScope, quoted bool) {
 	c.next() // fn
+	c.parseFnTail(scope, quoted)
+}
+
+// Defmethod compiles its tail as an fn, with the same optional name and arities.
+func (c *occurrenceCollector) parseFnTail(scope *occurrenceScope, quoted bool) {
 	fnName := ""
 	c.consumeMetadataPrefixes()
 	if c.peek().Type == lexer.IDENT {

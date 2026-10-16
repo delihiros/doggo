@@ -242,6 +242,13 @@ func isOptimizedBuiltinForm(name string) bool {
 	}
 }
 
+// IsUnshadowableSpecialForm reports names that always select compiler syntax,
+// even when a local or global binding with the same name exists.
+func IsUnshadowableSpecialForm(name string) bool {
+	_, found := getResolvedSpecialFormCompiler(name)
+	return found && !isOptimizedBuiltinForm(name)
+}
+
 func (c *Compiler) EmitCall(argc int) {
 	c.emit(opcode.OpCall, argc)
 }
