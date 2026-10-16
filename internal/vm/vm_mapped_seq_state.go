@@ -87,7 +87,7 @@ func closureMayReenterLazySequence(closure *compiler.Closure) bool {
 	for offset := 0; offset < len(ins); {
 		op := opcode.Opcode(ins[offset])
 		switch op {
-		case opcode.OpConst, opcode.OpPop, opcode.OpDup,
+		case opcode.OpConst, opcode.OpPop, opcode.OpDup, opcode.OpDropBelow,
 			opcode.OpTrue, opcode.OpFalse, opcode.OpNil,
 			opcode.OpAdd, opcode.OpSub, opcode.OpMul, opcode.OpDiv, opcode.OpMod, opcode.OpNeg,
 			opcode.OpGT, opcode.OpGTE, opcode.OpLT, opcode.OpLTE, opcode.OpNot,

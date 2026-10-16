@@ -126,9 +126,10 @@ func (c *Compiler) compileLoopForm(list *sexpr.List) error {
 
 		loopStartPos := len(c.currentInstructions())
 		c.loopStack = append(c.loopStack, LoopContext{
-			StartPos: loopStartPos,
-			Bindings: loopBindings,
-			TryDepth: len(c.scopes[c.scopeIndex].tryRegions),
+			StartPos:         loopStartPos,
+			Bindings:         loopBindings,
+			TryDepth:         len(c.scopes[c.scopeIndex].tryRegions),
+			PendingRecurArgs: c.scopes[c.scopeIndex].pendingRecurArgs,
 		})
 		defer func() {
 			c.loopStack = c.loopStack[:len(c.loopStack)-1]
@@ -152,16 +153,27 @@ func (c *Compiler) compileRecurForm(list *sexpr.List) error {
 		return c.newCompileError("recur expects %d arguments, got %d", len(loopCtx.Bindings), numArgs)
 	}
 
+	scopeIndex := c.scopeIndex
+	previousPending := c.scopes[scopeIndex].pendingRecurArgs
+	defer func() { c.scopes[scopeIndex].pendingRecurArgs = previousPending }()
 	for i := 1; i < len(list.Items); i++ {
 		if err := c.CompileForm(list.Items[i]); err != nil {
 			return err
 		}
+		c.scopes[scopeIndex].pendingRecurArgs++
 	}
 
 	// Arguments remain on the operand stack while finally runs with the old
 	// loop bindings. Only a successful unwind commits the next iteration.
 	if err := c.compileRecurTryCleanup(loopCtx.TryDepth); err != nil {
 		return err
+	}
+
+	// A recur in finally supersedes earlier pending arguments. Wait until its
+	// cleanup succeeds: a cleanup exception caught within that finally must
+	// still leave the original recur's arguments available to continue.
+	if abandoned := previousPending - loopCtx.PendingRecurArgs; abandoned > 0 {
+		c.emit(opcode.OpDropBelow, numArgs, abandoned)
 	}
 
 	for i := len(loopCtx.Bindings) - 1; i >= 0; i-- {

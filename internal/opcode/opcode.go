@@ -12,9 +12,10 @@ type Opcode byte
 // 命令定数
 const (
 	// スタック操作
-	OpConst Opcode = 0x00 // 定数プールから値をプッシュ
-	OpPop   Opcode = 0x01 // スタックトップを破棄
-	OpDup   Opcode = 0x02 // スタックトップを複製
+	OpConst     Opcode = 0x00 // 定数プールから値をプッシュ
+	OpPop       Opcode = 0x01 // スタックトップを破棄
+	OpDup       Opcode = 0x02 // スタックトップを複製
+	OpDropBelow Opcode = 0x06 // 指定したトップ要素を保持し、その直下の要素を破棄
 
 	// リテラル
 	OpTrue  Opcode = 0x03 // true をプッシュ
@@ -100,9 +101,10 @@ type Definition struct {
 // definitions は各Opcodeの定義を保持します。
 var definitions = map[Opcode]*Definition{
 	// スタック操作
-	OpConst: {"OpConst", []int{2}}, // uint16: 定数プールインデックス
-	OpPop:   {"OpPop", []int{}},
-	OpDup:   {"OpDup", []int{}},
+	OpConst:     {"OpConst", []int{2}}, // uint16: 定数プールインデックス
+	OpPop:       {"OpPop", []int{}},
+	OpDup:       {"OpDup", []int{}},
+	OpDropBelow: {"OpDropBelow", []int{2, 2}}, // uint16: 保持数, uint16: 直下の破棄数
 
 	// リテラル
 	OpTrue:  {"OpTrue", []int{}},
