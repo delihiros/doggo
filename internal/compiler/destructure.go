@@ -30,13 +30,23 @@ func (c *Compiler) emitSetSymbol(sym Symbol) {
 	}
 }
 
+// emitInitSymbol starts a lexical binding without mutating a dead letfn Cell
+// that may still occupy its reused local slot.
+func (c *Compiler) emitInitSymbol(sym Symbol) {
+	if sym.Scope == GlobalScope {
+		c.emit(opcode.OpSetGlobal, sym.Index)
+	} else {
+		c.emit(opcode.OpInitLocal, sym.Index)
+	}
+}
+
 // emitDefineAndSet はシンボルを定義し Set 命令を発行
 func (c *Compiler) emitDefineAndSet(name string) error {
 	sym, err := c.symbolTable.DefineChecked(name)
 	if err != nil {
 		return c.newCompileError("%s", err)
 	}
-	c.emitSetSymbol(sym)
+	c.emitInitSymbol(sym)
 	return nil
 }
 
@@ -117,7 +127,7 @@ func (c *Compiler) compileSeqDestructurePlan(vec *expand.DestructureVectorPlan) 
 	if err != nil {
 		return c.newCompileError("%s", err)
 	}
-	c.emitSetSymbol(tempSym)
+	c.emitInitSymbol(tempSym)
 
 	if vec.As != nil {
 		c.loadSymbol(tempSym)
@@ -172,7 +182,7 @@ func (c *Compiler) compileMapDestructurePlan(plan *expand.DestructureMapPlan) er
 	if err != nil {
 		return c.newCompileError("%s", err)
 	}
-	c.emitSetSymbol(tempSym)
+	c.emitInitSymbol(tempSym)
 
 	if plan.As != nil {
 		c.loadSymbol(tempSym)

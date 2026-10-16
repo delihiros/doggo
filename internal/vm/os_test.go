@@ -70,8 +70,9 @@ func TestOSNamespaceWhichHandlesHostResults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := value.String(); got != `["`+toolPath+`" nil]` {
-		t.Fatalf("which = %s", got)
+	items := mustVector(t, value).Items
+	if len(items) != 2 || mustString(t, items[0]) != toolPath || !types.IsNil(items[1]) {
+		t.Fatalf("which = %s", value)
 	}
 	if _, err := runner.Run(`(os/which "broken-tool")`); err == nil {
 		t.Fatal("broken lookup succeeded")
@@ -99,7 +100,7 @@ func TestOSNamespacePreservesLiteralBackslashesOnUnix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := value.String(); got != `"/tmp/doggo\literal"` {
-		t.Fatalf("cwd = %s", got)
+	if got := mustString(t, value); got != `/tmp/doggo\literal` {
+		t.Fatalf("cwd = %q", got)
 	}
 }
