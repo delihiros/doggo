@@ -43,6 +43,7 @@ func (c *Compiler) ResolveOptimizationSymbol(name string) (opt.Binding, bool) {
 type LoopContext struct {
 	StartPos int      // ループ本体の開始位置
 	Bindings []Symbol // ループバインディングのシンボル
+	TryDepth int      // Number of protected regions surrounding the loop target.
 }
 
 // MacroEvaluator はマクロ関数を実行するための関数型です。
@@ -80,6 +81,7 @@ type CompilationScope struct {
 	lastInstruction       EmittedInstruction
 	previousInstruction   EmittedInstruction
 	catchFinallyLoopDepth int // Recur must stay in loops created inside an active catch/finally.
+	tryRegions            []tryRegion
 }
 
 // EmittedInstruction は発行された命令の情報を保持します。

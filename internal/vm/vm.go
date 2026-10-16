@@ -484,6 +484,11 @@ func (vm *VM) Run() error {
 			// executeCall で Cell は unwrap される
 			err = vm.push(vm.stack[frame.basePointer+int(localIndex)])
 
+		case opcode.OpInitLocal:
+			localIndex := opcode.ReadUint8(ins[ip+1:])
+			frame.ip += 1
+			vm.stack[frame.basePointer+int(localIndex)] = vm.pop()
+
 		case opcode.OpSetLocal:
 			localIndex := opcode.ReadUint8(ins[ip+1:])
 			frame.ip += 1

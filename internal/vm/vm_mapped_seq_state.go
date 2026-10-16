@@ -92,7 +92,7 @@ func closureMayReenterLazySequence(closure *compiler.Closure) bool {
 			opcode.OpAdd, opcode.OpSub, opcode.OpMul, opcode.OpDiv, opcode.OpMod, opcode.OpNeg,
 			opcode.OpGT, opcode.OpGTE, opcode.OpLT, opcode.OpLTE, opcode.OpNot,
 			opcode.OpJump, opcode.OpJumpNotTruthy, opcode.OpJumpTruthy,
-			opcode.OpGetLocal, opcode.OpSetLocal,
+			opcode.OpGetLocal, opcode.OpSetLocal, opcode.OpInitLocal,
 			opcode.OpReturnValue, opcode.OpReturn:
 		default:
 			return true

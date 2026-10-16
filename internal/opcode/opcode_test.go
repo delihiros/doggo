@@ -13,6 +13,7 @@ func TestMake(t *testing.T) {
 		{OpConst, []int{65534}, []byte{byte(OpConst), 0xFF, 0xFE}},
 		{OpAdd, []int{}, []byte{byte(OpAdd)}},
 		{OpGetLocal, []int{255}, []byte{byte(OpGetLocal), 0xFF}},
+		{OpInitLocal, []int{255}, []byte{byte(OpInitLocal), 0xFF}},
 		{OpClosure, []int{65534, 255}, []byte{byte(OpClosure), 0xFF, 0xFE, 0xFF}},
 		{OpCall, []int{3}, []byte{byte(OpCall), 0x03}},
 	}
@@ -43,6 +44,7 @@ func TestReadOperands(t *testing.T) {
 	}{
 		{OpConst, []int{65535}, 2},
 		{OpGetLocal, []int{255}, 1},
+		{OpInitLocal, []int{255}, 1},
 		{OpClosure, []int{65535, 255}, 3},
 	}
 
@@ -104,6 +106,7 @@ func TestOpcodeString(t *testing.T) {
 		{OpConst, "OpConst"},
 		{OpAdd, "OpAdd"},
 		{OpGetLocal, "OpGetLocal"},
+		{OpInitLocal, "OpInitLocal"},
 		{Opcode(0xFF), "UNKNOWN(0xFF)"},
 	}
 

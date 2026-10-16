@@ -74,7 +74,7 @@ func (c *Compiler) compileLetfnForm(list *sexpr.List) error {
 			c.emit(opcode.OpNil)
 			c.emit(opcode.OpBox)
 			c.setSourceSpan(info.def.Items[0].Span())
-			c.emitSetSymbol(info.symbol)
+			c.emitInitSymbol(info.symbol)
 		}
 
 		for _, info := range fnInfos {
@@ -121,13 +121,14 @@ func (c *Compiler) compileLoopForm(list *sexpr.List) error {
 			}
 			loopBindings = append(loopBindings, symbol)
 			c.setSourceSpan(bindings.Items[i].Span())
-			c.emitSetSymbol(symbol)
+			c.emitInitSymbol(symbol)
 		}
 
 		loopStartPos := len(c.currentInstructions())
 		c.loopStack = append(c.loopStack, LoopContext{
 			StartPos: loopStartPos,
 			Bindings: loopBindings,
+			TryDepth: len(c.scopes[c.scopeIndex].tryRegions),
 		})
 		defer func() {
 			c.loopStack = c.loopStack[:len(c.loopStack)-1]
@@ -157,8 +158,14 @@ func (c *Compiler) compileRecurForm(list *sexpr.List) error {
 		}
 	}
 
+	// Arguments remain on the operand stack while finally runs with the old
+	// loop bindings. Only a successful unwind commits the next iteration.
+	if err := c.compileRecurTryCleanup(loopCtx.TryDepth); err != nil {
+		return err
+	}
+
 	for i := len(loopCtx.Bindings) - 1; i >= 0; i-- {
-		c.emitSetSymbol(loopCtx.Bindings[i])
+		c.emitInitSymbol(loopCtx.Bindings[i])
 	}
 
 	c.emit(opcode.OpJump, loopCtx.StartPos)

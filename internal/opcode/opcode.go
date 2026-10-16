@@ -54,6 +54,7 @@ const (
 	OpBox          Opcode = 0x45 // スタックトップをCellに包む（letfn用）
 	OpGetGlobalRaw Opcode = 0x46 // グローバル変数のVar自体を取得（#'用）
 	OpDefVar       Opcode = 0x47 // Var定義（def用、メタデータ付き）
+	OpInitLocal    Opcode = 0x48 // 新しいローカル束縛を設定（既存のCellを置換）
 
 	// 関数
 	OpCall        Opcode = 0x50 // 関数呼び出し
@@ -141,6 +142,7 @@ var definitions = map[Opcode]*Definition{
 	OpBox:          {"OpBox", []int{}},           // スタックトップをCellに包む
 	OpGetGlobalRaw: {"OpGetGlobalRaw", []int{2}}, // uint16: グローバル変数のVar自体を取得（#'用）
 	OpDefVar:       {"OpDefVar", []int{2, 2}},    // uint16: グローバル変数インデックス, uint16: メタデータ定数インデックス (0=なし)
+	OpInitLocal:    {"OpInitLocal", []int{1}},    // uint8: ローカル変数インデックス
 
 	// 関数
 	OpCall:        {"OpCall", []int{1}}, // uint8: 引数の数
