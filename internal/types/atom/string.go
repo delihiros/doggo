@@ -1,6 +1,7 @@
 package atom
 
 import (
+	"doggo/internal/textutil"
 	"doggo/internal/types"
 	"doggo/internal/types/util"
 )
@@ -9,7 +10,7 @@ import (
 type String string
 
 func (s String) String() string {
-	return `"` + string(s) + `"`
+	return textutil.QuoteDoggoString(string(s))
 }
 
 func (s String) Display() string {

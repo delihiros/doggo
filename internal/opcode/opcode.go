@@ -12,9 +12,10 @@ type Opcode byte
 // 命令定数
 const (
 	// スタック操作
-	OpConst Opcode = 0x00 // 定数プールから値をプッシュ
-	OpPop   Opcode = 0x01 // スタックトップを破棄
-	OpDup   Opcode = 0x02 // スタックトップを複製
+	OpConst     Opcode = 0x00 // 定数プールから値をプッシュ
+	OpPop       Opcode = 0x01 // スタックトップを破棄
+	OpDup       Opcode = 0x02 // スタックトップを複製
+	OpDropBelow Opcode = 0x06 // 指定したトップ要素を保持し、その直下の要素を破棄
 
 	// リテラル
 	OpTrue  Opcode = 0x03 // true をプッシュ
@@ -54,6 +55,7 @@ const (
 	OpBox          Opcode = 0x45 // スタックトップをCellに包む（letfn用）
 	OpGetGlobalRaw Opcode = 0x46 // グローバル変数のVar自体を取得（#'用）
 	OpDefVar       Opcode = 0x47 // Var定義（def用、メタデータ付き）
+	OpInitLocal    Opcode = 0x48 // 新しいローカル束縛を設定（既存のCellを置換）
 
 	// 関数
 	OpCall        Opcode = 0x50 // 関数呼び出し
@@ -99,9 +101,10 @@ type Definition struct {
 // definitions は各Opcodeの定義を保持します。
 var definitions = map[Opcode]*Definition{
 	// スタック操作
-	OpConst: {"OpConst", []int{2}}, // uint16: 定数プールインデックス
-	OpPop:   {"OpPop", []int{}},
-	OpDup:   {"OpDup", []int{}},
+	OpConst:     {"OpConst", []int{2}}, // uint16: 定数プールインデックス
+	OpPop:       {"OpPop", []int{}},
+	OpDup:       {"OpDup", []int{}},
+	OpDropBelow: {"OpDropBelow", []int{2, 2}}, // uint16: 保持数, uint16: 直下の破棄数
 
 	// リテラル
 	OpTrue:  {"OpTrue", []int{}},
@@ -141,6 +144,7 @@ var definitions = map[Opcode]*Definition{
 	OpBox:          {"OpBox", []int{}},           // スタックトップをCellに包む
 	OpGetGlobalRaw: {"OpGetGlobalRaw", []int{2}}, // uint16: グローバル変数のVar自体を取得（#'用）
 	OpDefVar:       {"OpDefVar", []int{2, 2}},    // uint16: グローバル変数インデックス, uint16: メタデータ定数インデックス (0=なし)
+	OpInitLocal:    {"OpInitLocal", []int{1}},    // uint8: ローカル変数インデックス
 
 	// 関数
 	OpCall:        {"OpCall", []int{1}}, // uint8: 引数の数
