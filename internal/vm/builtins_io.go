@@ -5,6 +5,7 @@ package vm
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"unicode/utf8"
@@ -223,9 +224,39 @@ func prStr(v types.Value) string {
 	case atom.String:
 		return textutil.QuoteDoggoString(string(val))
 	case atom.Keyword:
-		return string(val)
+		return val.String()
+	case *atom.Number:
+		text := val.String()
+		if val.IntVal == nil && val.FloatVal != nil &&
+			!math.IsInf(*val.FloatVal, 0) && !math.IsNaN(*val.FloatVal) &&
+			!strings.ContainsAny(text, ".eE") {
+			return text + ".0"
+		}
+		return text
 	case types.Number:
 		return val.String()
+	case *coll.Vector:
+		if val == nil {
+			return "[]"
+		}
+		return prStrItems(val.Items, "[", "]")
+	case *coll.List:
+		if val == nil {
+			return "()"
+		}
+		return prStrItems(val.Items, "(", ")")
+	case *coll.Set:
+		if val == nil {
+			return "#{}"
+		}
+		return prStrItems(val.Order, "#{", "}")
+	case types.Map:
+		keys := sequableToSlice(val.Keys())
+		parts := make([]string, 0, len(keys))
+		for _, key := range keys {
+			parts = append(parts, prStr(key)+" "+prStr(val.Get(key)))
+		}
+		return "{" + strings.Join(parts, ", ") + "}"
 	case atom.Boolean:
 		if val {
 			return "true"
@@ -236,6 +267,14 @@ func prStr(v types.Value) string {
 	default:
 		return val.String()
 	}
+}
+
+func prStrItems(items []types.Value, open, close string) string {
+	parts := make([]string, len(items))
+	for i, item := range items {
+		parts[i] = prStr(item)
+	}
+	return open + strings.Join(parts, " ") + close
 }
 
 // ioOptions は slurp/spit のオプションを保持します。
