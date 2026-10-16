@@ -304,6 +304,9 @@ func TestHTTPBuiltinRejectsMalformedUTF8RequestValues(t *testing.T) {
 			if got := mustKeywordString(t, data.Get(atom.NewKeyword("argument"))); got != tt.argument {
 				t.Fatalf("argument = %s, want %s", got, tt.argument)
 			}
+			if got := mustString(t, data.Get(atom.NewKeyword("actual"))); got != "<invalid UTF-8>" {
+				t.Fatalf("raw safe actual = %q, want <invalid UTF-8>", got)
+			}
 		})
 	}
 }
