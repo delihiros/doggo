@@ -121,8 +121,8 @@ func TestCharacterStr(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		// str returns the actual character, so newline becomes "\n"
-		if result.String() != "\"\n\"" {
-			t.Errorf("expected newline in string, got %s", result.String())
+		if got := mustString(t, result); got != "\n" {
+			t.Errorf("expected newline in string, got %q", got)
 		}
 	})
 }

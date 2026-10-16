@@ -11,10 +11,10 @@ func TestCallablePredicatesTreatNilAsFalse(t *testing.T) {
 		expected string
 	}{
 		{"filter_empty_map", `(pr-str (filter {} ["a" "b"]))`, `"()"`},
-		{"filter_map_lookup", `(pr-str (filter {"a" true} ["a" "b"]))`, `"("a")"`},
+		{"filter_map_lookup", `(pr-str (filter {"a" true} ["a" "b"]))`, `"(\"a\")"`},
 		{"every_empty_map", `(every? {} ["a"])`, `false`},
 		{"some_empty_map", `(pr-str (some {} ["a"]))`, `"nil"`},
-		{"remove_empty_map", `(pr-str (remove {} ["a"]))`, `"("a")"`},
+		{"remove_empty_map", `(pr-str (remove {} ["a"]))`, `"(\"a\")"`},
 	}
 
 	for _, tt := range tests {
