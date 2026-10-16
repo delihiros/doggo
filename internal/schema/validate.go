@@ -289,7 +289,7 @@ func validatePredicate(ctx context.Context, schema *Schema, value types.Value, p
 			Path:      path,
 			Expected:  schema.raw,
 			Actual:    value,
-			Predicate: schema.predicate,
+			Predicate: schema.predicateValue,
 			Message:   err.Error(),
 		}}
 	}
@@ -300,7 +300,7 @@ func validatePredicate(ctx context.Context, schema *Schema, value types.Value, p
 		Path:      path,
 		Expected:  schema.raw,
 		Actual:    value,
-		Predicate: schema.predicate,
+		Predicate: schema.predicateValue,
 		Message:   "predicate returned false",
 	}}
 }

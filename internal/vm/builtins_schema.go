@@ -23,7 +23,7 @@ var builtinsSchema = []BuiltinDefinition{
 				return nil, err
 			}
 
-			compiled, err := normalizeSchemaArg(args[0])
+			compiled, err := normalizeSchemaArg(ctx, args[0])
 			if err != nil {
 				return nil, err
 			}
@@ -37,7 +37,7 @@ var builtinsSchema = []BuiltinDefinition{
 				return nil, err
 			}
 
-			compiled, err := normalizeSchemaArg(args[0])
+			compiled, err := normalizeSchemaArg(ctx, args[0])
 			if err != nil {
 				return nil, err
 			}
@@ -51,7 +51,7 @@ var builtinsSchema = []BuiltinDefinition{
 				return nil, err
 			}
 
-			compiled, err := normalizeSchemaArg(args[0])
+			compiled, err := normalizeSchemaArg(ctx, args[0])
 			if err != nil {
 				return nil, err
 			}
@@ -71,7 +71,7 @@ var builtinsSchema = []BuiltinDefinition{
 				return nil, err
 			}
 
-			compiled, err := normalizeSchemaArg(args[0])
+			compiled, err := normalizeSchemaArg(ctx, args[0])
 			if err != nil {
 				return nil, err
 			}
@@ -100,7 +100,7 @@ var builtinsSchema = []BuiltinDefinition{
 				return nil, err
 			}
 
-			compiled, err := normalizeSchemaArg(args[0])
+			compiled, err := normalizeSchemaArg(ctx, args[0])
 			if err != nil {
 				return nil, err
 			}
@@ -120,7 +120,7 @@ var builtinsSchema = []BuiltinDefinition{
 				return nil, err
 			}
 
-			compiled, err := normalizeSchemaArg(args[0])
+			compiled, err := normalizeSchemaArg(ctx, args[0])
 			if err != nil {
 				return nil, err
 			}
@@ -144,7 +144,7 @@ var builtinsSchema = []BuiltinDefinition{
 				return nil, err
 			}
 
-			contract, opts, err := parseSchemaInstrumentSpec(args[0], args[1], optValue(args, 2))
+			contract, opts, err := parseSchemaInstrumentSpec(ctx, args[0], args[1], optValue(args, 2))
 			if err != nil {
 				return nil, err
 			}
@@ -186,7 +186,7 @@ var builtinsSchema = []BuiltinDefinition{
 				return nil, err
 			}
 
-			compiled, err := normalizeSchemaArg(args[1])
+			compiled, err := normalizeSchemaArg(ctx, args[1])
 			if err != nil {
 				return nil, err
 			}
@@ -205,8 +205,16 @@ var builtinsSchema = []BuiltinDefinition{
 	},
 }
 
-func normalizeSchemaArg(value types.Value) (*schema.Schema, error) {
-	compiled, err := schema.Normalize(value)
+func normalizeSchemaArg(ctx context.Context, value types.Value) (*schema.Schema, error) {
+	compiled, err := schema.NormalizeWithPredicateResolver(value, func(value types.Value) (types.Fn, bool) {
+		switch value.(type) {
+		case *compiler.Closure, *compiler.CompiledFunction:
+			if vm := GetVM(ctx); vm != nil {
+				return &schemaInstrumentVMCallable{runtime: vm.snapshotCallableRuntime(), target: value}, true
+			}
+		}
+		return nil, false
+	})
 	if err == nil {
 		return compiled, nil
 	}
@@ -599,8 +607,8 @@ func schemaCheckGenerationOverrideValue(ctx context.Context, compiled *schema.Sc
 	}
 }
 
-func parseSchemaInstrumentSpec(target, rawContract, rawOpts types.Value) (schema.InstrumentContract, schema.InstrumentOptions, error) {
-	contract, err := parseSchemaInstrumentContract(target, rawContract)
+func parseSchemaInstrumentSpec(ctx context.Context, target, rawContract, rawOpts types.Value) (schema.InstrumentContract, schema.InstrumentOptions, error) {
+	contract, err := parseSchemaInstrumentContract(ctx, target, rawContract)
 	if err != nil {
 		return schema.InstrumentContract{}, schema.InstrumentOptions{}, err
 	}
@@ -614,7 +622,7 @@ func parseSchemaInstrumentSpec(target, rawContract, rawOpts types.Value) (schema
 	return contract, opts, nil
 }
 
-func parseSchemaInstrumentContract(target, raw types.Value) (schema.InstrumentContract, error) {
+func parseSchemaInstrumentContract(ctx context.Context, target, raw types.Value) (schema.InstrumentContract, error) {
 	optionMap, ok := raw.(types.Map)
 	if !ok {
 		return schema.InstrumentContract{}, &schema.InstrumentError{
@@ -626,14 +634,14 @@ func parseSchemaInstrumentContract(target, raw types.Value) (schema.InstrumentCo
 
 	contract := schema.InstrumentContract{}
 	if rawArgs := optionMap.Get(atom.NewKeyword("args")); rawArgs != nil && rawArgs != atom.NilValue {
-		argsSchema, err := normalizeSchemaArg(rawArgs)
+		argsSchema, err := normalizeSchemaArg(ctx, rawArgs)
 		if err != nil {
 			return schema.InstrumentContract{}, err
 		}
 		contract.Args = argsSchema
 	}
 	if rawRet := optionMap.Get(atom.NewKeyword("ret")); rawRet != nil && rawRet != atom.NilValue {
-		retSchema, err := normalizeSchemaArg(rawRet)
+		retSchema, err := normalizeSchemaArg(ctx, rawRet)
 		if err != nil {
 			return schema.InstrumentContract{}, err
 		}
@@ -830,7 +838,7 @@ func schemaInstrumentTargetCallable(ctx context.Context, value types.Value) (typ
 				Message: "instrument target requires VM context",
 			}
 		}
-		return &schemaInstrumentVMCallable{vm: vm, target: value}, nil
+		return &schemaInstrumentVMCallable{runtime: vm.snapshotCallableRuntime(), target: value}, nil
 	default:
 		return nil, &schema.InstrumentError{
 			Target:  value,
@@ -854,7 +862,7 @@ func schemaCheckTargetCallable(ctx context.Context, value types.Value) (types.Fn
 				Message: "property target requires VM context",
 			}
 		}
-		return &schemaInstrumentVMCallable{vm: vm, target: value}, nil
+		return &schemaInstrumentVMCallable{runtime: vm.snapshotCallableRuntime(), target: value}, nil
 	default:
 		return nil, &schema.CheckError{
 			Reason:  "non-callable property target",
@@ -864,8 +872,8 @@ func schemaCheckTargetCallable(ctx context.Context, value types.Value) (types.Fn
 }
 
 type schemaInstrumentVMCallable struct {
-	vm     *VM
-	target types.Value
+	runtime CallableRuntime
+	target  types.Value
 }
 
 func (f *schemaInstrumentVMCallable) String() string {
@@ -903,7 +911,7 @@ func (f *schemaInstrumentVMCallable) schemaInstrumentOriginalValue() types.Value
 }
 
 func (f *schemaInstrumentVMCallable) Invoke(ctx context.Context, args ...types.Value) (types.Value, error) {
-	if f == nil || f.vm == nil || f.target == nil {
+	if f == nil || f.runtime == nil || f.target == nil {
 		return nil, &schema.InstrumentError{
 			Target:  nil,
 			Reason:  "instrument target requires VM context",
@@ -915,7 +923,10 @@ func (f *schemaInstrumentVMCallable) Invoke(ctx context.Context, args ...types.V
 	if callCtx == nil {
 		callCtx = context.Background()
 	}
-	return f.vm.Apply(callCtx, f.target, args)
+	// Retain execution capabilities rather than a pooled VM. The invocation's
+	// context supplies current dynamic bindings and cancellation.
+	runtime := bindCallableRuntime(f.runtime, GetVM(callCtx))
+	return runtime.Apply(callCtx, f.target, args)
 }
 
 type schemaInstrumentOriginaler interface {
