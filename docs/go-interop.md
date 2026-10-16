@@ -85,6 +85,8 @@ doggo deps add ../greeter
 
 `../greeter` は、`doggo.mod` がある Doggo プロジェクトのディレクトリを基準に解決されます。成功すると `doggo.mod` の `:deps` に `../greeter` が加わります。このコマンド自体は通常、何も表示しません。
 
+ローカルの Go モジュールが `replace example.com/shared => ../shared` のような相対パスの置換を使う場合、置換先の `go.mod` にも `module example.com/shared` が必要です。Doggo の生成ホストは、置換前のパスと置換先が宣言するモジュールパスが異なる構成をサポートしません。モジュール名を変更した場合は、利用側の `import`、`require`、`replace` のパスも合わせて変更してください。
+
 ```bash
 doggo deps list
 ```

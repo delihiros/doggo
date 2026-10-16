@@ -141,6 +141,9 @@ func (c *Compiler) compileRecurForm(list *sexpr.List) error {
 	if len(c.loopStack) == 0 {
 		return c.newCompileError("recur must be inside a loop or fn")
 	}
+	if len(c.loopStack) <= c.scopes[c.scopeIndex].catchFinallyLoopDepth {
+		return c.newCompileError("recur cannot exit a catch with finally")
+	}
 
 	loopCtx := c.loopStack[len(c.loopStack)-1]
 	numArgs := len(list.Items) - 1
