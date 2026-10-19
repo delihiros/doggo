@@ -15,15 +15,16 @@ import (
 	"time"
 )
 
-// Exercise the stdlib's background-shell fixture directly, so a failure reports
-// whether the child escaped the group or produced its marker before cancellation.
+// A release gate prevents scheduler delays from letting the child create its
+// marker before cancellation. EOF on its inherited pipe confirms termination.
 func TestProcessKillTreeBackgroundShell(t *testing.T) {
 	dir := t.TempDir()
 	ready := filepath.Join(dir, "ready")
 	marker := filepath.Join(dir, "marker")
-	child := fmt.Sprintf(`printf '%%s' "$$" > %s; sleep 0.5; printf orphan > %s`, processShellSingleQuote(ready), processShellSingleQuote(marker))
-	script := "sh -lc " + processShellSingleQuote(child) + " & sleep 5"
-	h, err := processStartHandle(context.Background(), []string{"sh", "-lc", script}, processStartOptions{
+	release := filepath.Join(dir, "release")
+	child := fmt.Sprintf(`printf '%%s' "$$" > %s; while [ ! -f %s ]; do sleep 0.01; done; printf orphan > %s`, processShellSingleQuote(ready), processShellSingleQuote(release), processShellSingleQuote(marker))
+	script := "sh -c " + processShellSingleQuote(child) + " & wait"
+	h, err := processStartHandle(context.Background(), []string{"sh", "-c", script}, processStartOptions{
 		in:  processRedirect{mode: processRedirectClosed},
 		out: processRedirect{mode: processRedirectPipe},
 		err: processRedirect{mode: processRedirectPipe},
@@ -31,7 +32,7 @@ func TestProcessKillTreeBackgroundShell(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = h.killTree() })
+	t.Cleanup(func() { _ = h.cmd.Cancel() })
 	deadline := time.Now().Add(5 * time.Second)
 	var pidData []byte
 	for time.Now().Before(deadline) {
@@ -56,7 +57,14 @@ func TestProcessKillTreeBackgroundShell(t *testing.T) {
 	if exit.String() == "0" {
 		t.Fatal("kill returned successful exit")
 	}
-	time.Sleep(600 * time.Millisecond)
+	if err := os.WriteFile(release, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-h.stdout.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("background child kept stdout open after cancellation")
+	}
 	stderr, err := h.stderr.readAll()
 	if err != nil {
 		t.Fatal(err)
