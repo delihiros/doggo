@@ -16,7 +16,9 @@ Before contributing to the public repository, set a GitHub noreply identity in i
 git config --local user.email YOUR_NOREPLY_ADDRESS
 ```
 
-CI checks the raw author and committer identities of new push/PR commits, including merge commits. If a replaced branch's previous head is unavailable, it checks all reachable history instead. Both identities must use a GitHub noreply address; diagnostics identify the commit and role without repeating the email. Check account email choices when making commits through GitHub as well as local Git. To verify all history reachable from the current branch before publication, run:
+CI checks the raw author and committer identities of submitted commits, including actual merge commits. Pull requests check the event's base SHA through head SHA, excluding GitHub's synthetic test merge; integration tests still run on that merge. Feature branch pushes check commits absent from the fetched default branch, so a rebase does not re-report existing default-branch history. Default branch and tag pushes check the event's before/after range, falling back to all reachable history for an initial push or unavailable previous head. Missing PR commits or default branch refs fail the check. Both identities must use a GitHub noreply address; diagnostics identify the commit and role without repeating the email. Check account email choices when making commits through GitHub as well as local Git.
+
+The separate **Audit complete commit history** job runs on scheduled and manual CI invocations. It deliberately reports existing identity problems even when the submitted-commit check passes. To verify all history reachable from the current branch before publication, run:
 
 ```bash
 python .github/scripts/check_commit_identity.py

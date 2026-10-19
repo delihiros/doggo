@@ -1,6 +1,7 @@
 """Check raw commit identities without printing personal email addresses."""
 
 import argparse
+import json
 import os
 from pathlib import Path
 import re
@@ -36,30 +37,59 @@ def check_identities(repository, revision="HEAD", base=None):
     return issues
 
 
+def event_sha(value, allow_zero=False):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", value):
+        raise ValueError("Invalid event commit")
+    if set(value) == {"0"}:
+        if allow_zero:
+            return None
+        raise ValueError("Missing event commit")
+    return value
+
+
+def ci_range(repository):
+    with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as source:
+        event = json.load(source)
+    event_name = os.environ["GITHUB_EVENT_NAME"]
+    if event_name == "pull_request":
+        # HEAD is GitHub's synthetic test merge, not the submitted commit.
+        pr = event["pull_request"]
+        return event_sha(pr["head"]["sha"]), event_sha(pr["base"]["sha"])
+    if event_name != "push":
+        raise ValueError("Unsupported event; run without --ci for a full-history audit")
+    head = event_sha(event["after"])
+    base = event_sha(event["before"], allow_zero=True)
+    default_branch = event["repository"]["default_branch"]
+    if not isinstance(default_branch, str) or not default_branch:
+        raise ValueError("Missing default branch")
+    for ref in [f"refs/heads/{default_branch}", event["ref"]]:
+        subprocess.check_call(["git", "check-ref-format", ref], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if event["ref"].startswith("refs/heads/") and event["ref"] != f"refs/heads/{default_branch}":
+        # A rebase can introduce existing main history relative to event.before.
+        # fetch-depth: 0 provides the default branch; missing it must fail closed.
+        return head, resolve_commit(repository, f"refs/remotes/origin/{default_branch}")
+    if base:
+        try:
+            resolve_commit(repository, base)
+        except subprocess.CalledProcessError:
+            # For a replaced default branch/tag, a full audit is stricter.
+            base = None
+    return head, base
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--revision", default="HEAD")
     parser.add_argument("--base", help="Check commits reachable from revision and not base; omit to check all reachable history")
-    parser.add_argument("--ci", action="store_true", help="Use COMMIT_BASE for a push/PR range; other events check all history")
+    parser.add_argument("--ci", action="store_true", help="Select submitted push/PR commits from the GitHub event payload")
     args = parser.parse_args()
-    base = args.base
-    if args.ci:
-        base = os.environ.get("COMMIT_BASE", "")
-        if base and not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", base):
-            parser.error("Invalid CI base commit")
-        if not base or set(base) == {"0"}:
-            base = None
-        elif base:
-            try:
-                resolve_commit(args.repository, base)
-            except subprocess.CalledProcessError:
-                # A replaced branch may no longer expose the event's old head.
-                # Checking all reachable history is stricter than checking a range.
-                base = None
+    if args.ci and (args.base is not None or args.revision != "HEAD"):
+        parser.error("--ci cannot be combined with an explicit revision or base")
     try:
-        issues = check_identities(args.repository, args.revision, base)
-    except (ValueError, subprocess.CalledProcessError) as exc:
+        revision, base = ci_range(args.repository) if args.ci else (args.revision, args.base)
+        issues = check_identities(args.repository, revision, base)
+    except (ValueError, KeyError, TypeError, OSError, subprocess.CalledProcessError) as exc:
         print(f"Could not verify commit identities: {type(exc).__name__}", file=sys.stderr)
         return 2
     for issue in issues:
