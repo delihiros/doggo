@@ -22,11 +22,15 @@ type Options struct {
 type lineState struct {
 	inString bool
 	escape   bool
+	// The last character token's end is a floor for trimming this line.
+	characterEnd int
 }
 
 type sourceLine struct {
 	text   string
 	ending string
+	// A raw CR/LF character owns the first byte of this physical ending.
+	literalEnding bool
 }
 
 // Format は構造ベースで source を整形します。
@@ -60,7 +64,9 @@ func Format(source string, opts Options) (string, []Diagnostic, error) {
 		text := line.text
 		// 行末が文字列内なら、開始行も含めて末尾空白を保存する。
 		if !newState.inString {
-			text = strings.TrimRight(text, " \t\r")
+			trimmed := strings.TrimRight(text, " \t\r")
+			end := max(len(trimmed), newState.characterEnd)
+			text = text[:end]
 		}
 		if !lineStartsInString {
 			text = strings.TrimLeft(text, " \t")
@@ -74,9 +80,10 @@ func Format(source string, opts Options) (string, []Diagnostic, error) {
 		}
 		out.WriteString(text)
 
-		// 文字列内の改行は元のバイト列を保存し、外側だけを正規化する。
+		// Keep literal newline bytes, including raw character payloads.
+		// Normalize only endings that are outside literals.
 		ending := line.ending
-		if !newState.inString && (ending != "" || text != "") {
+		if !newState.inString && !line.literalEnding && (ending != "" || text != "") {
 			ending = lineEnding
 		}
 		out.WriteString(ending)
@@ -95,6 +102,7 @@ func splitSourceLines(source string) []sourceLine {
 	start := 0
 	state := lineState{}
 	inComment := false
+	characterEnd := 0
 	for i := 0; i < len(source); i++ {
 		if source[i] != '\r' && source[i] != '\n' {
 			if inComment {
@@ -109,7 +117,8 @@ func splitSourceLines(source string) []sourceLine {
 					state.inString = false
 				}
 			} else if source[i] == '\\' {
-				i = characterLiteralEnd(source, i) - 1
+				characterEnd = characterLiteralEnd(source, i)
+				i = characterEnd - 1
 				// A raw CR/LF character still needs the line-ending path below.
 				if source[i] == '\r' || source[i] == '\n' {
 					i--
@@ -130,7 +139,7 @@ func splitSourceLines(source string) []sourceLine {
 		if source[i] == '\r' && end < len(source) && source[end] == '\n' {
 			end++
 		}
-		lines = append(lines, sourceLine{text: source[start:i], ending: source[i:end]})
+		lines = append(lines, sourceLine{text: source[start:i], ending: source[i:end], literalEnding: i < characterEnd})
 		start = end
 		i = end - 1
 		state.escape = false
@@ -170,6 +179,7 @@ func analyzeLine(line string, currentDepth int, state lineState) (int, int, line
 	leadingClosers := 0
 	leadingPhase := true
 	s := state
+	s.characterEnd = 0
 
 	for i := 0; i < len(line); i++ {
 		ch := line[i]
@@ -190,7 +200,8 @@ func analyzeLine(line string, currentDepth int, state lineState) (int, int, line
 
 		if ch == '\\' {
 			leadingPhase = false
-			i = characterLiteralEnd(line, i) - 1
+			s.characterEnd = characterLiteralEnd(line, i)
+			i = s.characterEnd - 1
 			continue
 		}
 		if ch == ';' {

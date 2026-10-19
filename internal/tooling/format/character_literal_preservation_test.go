@@ -117,7 +117,7 @@ func TestSplitSourceLinesCharacterLiteralsRespectCommentCR(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := splitSourceLines(tc.source); !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("splitSourceLines\nwant=%q\ngot =%q", tc.want, got)
+				t.Errorf("splitSourceLines\nwant=%#v\ngot =%#v", tc.want, got)
 			}
 		})
 	}
