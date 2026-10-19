@@ -50,6 +50,13 @@ def main():
             parser.error("Invalid CI base commit")
         if not base or set(base) == {"0"}:
             base = None
+        elif base:
+            try:
+                resolve_commit(args.repository, base)
+            except subprocess.CalledProcessError:
+                # A replaced branch may no longer expose the event's old head.
+                # Checking all reachable history is stricter than checking a range.
+                base = None
     try:
         issues = check_identities(args.repository, args.revision, base)
     except (ValueError, subprocess.CalledProcessError) as exc:
