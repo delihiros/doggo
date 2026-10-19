@@ -6,6 +6,7 @@ src/**
 scripts/**
 out/**
 node_modules/**
+DEPENDENCY_REVIEW.md
 tsconfig.json
 esbuild.config.mjs
 package-lock.json

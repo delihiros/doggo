@@ -16,8 +16,12 @@ the entire declared editor range and checks the API types pin. Compilation and
 bundling run this check, including during VSIX packaging. Dependabot continues
 to propose language-client patch/minor updates and VS Code types patch updates;
 major client upgrades and newer API lines require a deliberate migration.
-See [the dependency review](DEPENDENCY_REVIEW.md) for tradeoffs and validation
-limits. These metadata and compilation checks do not replace editor-host tests.
+These metadata and compilation checks do not verify activation in a real VS
+Code host or communication with Doggo. Before claiming end-to-end compatibility,
+validate language features, server restart, REPL execution and indentation in
+supported editor versions, operating systems and remote extension hosts. Review
+security updates separately; retaining client 9.x does not guarantee future
+security coverage.
 
 ## Features
 
