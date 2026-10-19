@@ -7,6 +7,9 @@ import (
 )
 
 type Checker interface{ Check() (int, error) }
+type Float interface{ Float() (float32, error) }
+type Complex interface{ Complex() (complex64, error) }
+type Unsigned interface{ Unsigned() (uint64, error) }
 type Count int8
 type Values interface {
 	Values() (Count, *int, []int, error)

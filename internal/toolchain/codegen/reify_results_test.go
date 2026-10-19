@@ -40,6 +40,9 @@ func TestGeneratedReifyResultContracts(t *testing.T) {
 	t.Setenv("GOPROXY", "off")
 	if _, err := GenerateReifyFile(root, filepath.Join(root, "generated.go"), requiredCandidates(
 		"doggo/reifyprobe/native.Checker", "doggo/reifyprobe/native.Values",
+		"doggo/reifyprobe/native.Float",
+		"doggo/reifyprobe/native.Complex",
+		"doggo/reifyprobe/native.Unsigned",
 		"doggo/reifyprobe/native.Plain", "doggo/reifyprobe/native.Alias", "doggo/reifyprobe/native.Chain",
 		"doggo/reifyprobe/native.AliasPair", "doggo/reifyprobe/native.NoError", "doggo/reifyprobe/native.Concrete",
 		"doggo/reifyprobe/native.Variadic", "doggo/reifyprobe/native.MultiError",

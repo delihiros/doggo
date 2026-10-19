@@ -246,7 +246,17 @@ func convertGoObjectToReflectValue(goObj *atom.GoObject, targetType reflect.Type
 	if rv.Type().AssignableTo(targetType) {
 		return rv, nil
 	}
-	if rv.Type().ConvertibleTo(targetType) {
+	if isRealNumericKind(rv.Kind()) && isRealNumericKind(targetType.Kind()) {
+		return convertNumericToReflectValue(rv, targetType)
+	}
+	if (rv.Kind() == reflect.Complex64 || rv.Kind() == reflect.Complex128) && targetType.Kind() == reflect.Complex64 {
+		value := rv.Complex()
+		if overflowsFloat32(real(value)) || overflowsFloat32(imag(value)) {
+			return reflect.Value{}, fmt.Errorf("complex %v overflows %s", value, targetType)
+		}
+	}
+	// Slice-to-array conversions depend on the value's length, not only its type.
+	if rv.CanConvert(targetType) {
 		return rv.Convert(targetType), nil
 	}
 	if targetType.Kind() == reflect.Interface {
@@ -302,15 +312,61 @@ func isNilableKind(kind reflect.Kind) bool {
 // Go のリフレクションでは、underlying type が同じでも型が異なる場合は明示的な変換が必要です。
 func convertNumberToReflectValue(num *atom.Number, targetType reflect.Type) (reflect.Value, error) {
 	switch targetType.Kind() {
+	case reflect.Float32, reflect.Float64:
+		if num.FloatVal != nil {
+			return convertNumericToReflectValue(reflect.ValueOf(*num.FloatVal), targetType)
+		}
+		if num.IntVal != nil {
+			// Preserve the existing float64-based conversion policy for Doggo numbers.
+			return convertNumericToReflectValue(reflect.ValueOf(float64(*num.IntVal)), targetType)
+		}
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if num.IntVal != nil {
+			return convertNumericToReflectValue(reflect.ValueOf(*num.IntVal), targetType)
+		}
+		if num.FloatVal != nil {
+			return convertNumericToReflectValue(reflect.ValueOf(*num.FloatVal), targetType)
+		}
+	}
+	return reflect.Value{}, fmt.Errorf("cannot convert number to %s", targetType)
+}
+
+func isRealNumericKind(kind reflect.Kind) bool {
+	switch kind {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64:
+		return true
+	default:
+		return false
+	}
+}
+
+// convertNumericToReflectValue applies the same range and integer-loss checks to
+// Doggo numbers and GoObject numbers, including named Go numeric types.
+func convertNumericToReflectValue(source reflect.Value, targetType reflect.Type) (reflect.Value, error) {
+	switch targetType.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		var value int64
-		if num.IntVal != nil {
-			value = *num.IntVal
-		} else if num.FloatVal != nil {
-			if math.IsNaN(*num.FloatVal) || math.IsInf(*num.FloatVal, 0) {
+		switch source.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			value = source.Int()
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			unsigned := source.Uint()
+			if unsigned > math.MaxInt64 {
+				return reflect.Value{}, fmt.Errorf("integer %d overflows %s", unsigned, targetType)
+			}
+			value = int64(unsigned)
+		case reflect.Float32, reflect.Float64:
+			floating := source.Float()
+			if math.IsNaN(floating) || math.IsInf(floating, 0) {
 				return reflect.Value{}, fmt.Errorf("cannot convert non-finite float to %s", targetType)
 			}
-			converted, accuracy := big.NewFloat(*num.FloatVal).Int64()
+			if math.Trunc(floating) != floating {
+				return reflect.Value{}, fmt.Errorf("cannot convert float to %s without loss", targetType)
+			}
+			converted, accuracy := big.NewFloat(floating).Int64()
 			if accuracy != big.Exact {
 				return reflect.Value{}, fmt.Errorf("cannot convert float to %s without loss", targetType)
 			}
@@ -322,18 +378,25 @@ func convertNumberToReflectValue(num *atom.Number, targetType reflect.Type) (ref
 		rv := reflect.New(targetType).Elem()
 		rv.SetInt(value)
 		return rv, nil
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		var value uint64
-		if num.IntVal != nil {
-			if *num.IntVal < 0 {
+		switch source.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			if source.Int() < 0 {
 				return reflect.Value{}, fmt.Errorf("cannot convert negative number to unsigned type")
 			}
-			value = uint64(*num.IntVal)
-		} else if num.FloatVal != nil {
-			if math.IsNaN(*num.FloatVal) || math.IsInf(*num.FloatVal, 0) {
+			value = uint64(source.Int())
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			value = source.Uint()
+		case reflect.Float32, reflect.Float64:
+			floating := source.Float()
+			if math.IsNaN(floating) || math.IsInf(floating, 0) {
 				return reflect.Value{}, fmt.Errorf("cannot convert non-finite float to %s", targetType)
 			}
-			converted, accuracy := big.NewFloat(*num.FloatVal).Uint64()
+			if math.Trunc(floating) != floating {
+				return reflect.Value{}, fmt.Errorf("cannot convert float to %s without loss", targetType)
+			}
+			converted, accuracy := big.NewFloat(floating).Uint64()
 			if accuracy != big.Exact {
 				return reflect.Value{}, fmt.Errorf("cannot convert float to %s without loss", targetType)
 			}
@@ -346,35 +409,27 @@ func convertNumberToReflectValue(num *atom.Number, targetType reflect.Type) (ref
 		rv.SetUint(value)
 		return rv, nil
 	case reflect.Float32, reflect.Float64:
-		if num.FloatVal != nil {
-			val := *num.FloatVal
-			rv := createFloatReflectValue(val, targetType.Kind())
-			return convertToTargetType(rv, targetType), nil
-		} else if num.IntVal != nil {
-			val := float64(*num.IntVal)
-			rv := createFloatReflectValue(val, targetType.Kind())
-			return convertToTargetType(rv, targetType), nil
+		var value float64
+		switch source.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			value = float64(source.Int())
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			value = float64(source.Uint())
+		case reflect.Float32, reflect.Float64:
+			value = source.Float()
 		}
+		if targetType.Kind() == reflect.Float32 && overflowsFloat32(value) {
+			return reflect.Value{}, fmt.Errorf("float %g overflows %s", value, targetType)
+		}
+		// Convert directly to retain native integer-to-float rounding in GoObjects.
+		return source.Convert(targetType), nil
 	}
-
-	return reflect.Value{}, fmt.Errorf("cannot convert number to %s", targetType)
+	return reflect.Value{}, fmt.Errorf("cannot convert %s to %s", source.Type(), targetType)
 }
 
-// createFloatReflectValue は浮動小数点値から適切な型の reflect.Value を作成します。
-func createFloatReflectValue(val float64, kind reflect.Kind) reflect.Value {
-	if kind == reflect.Float32 {
-		return reflect.ValueOf(float32(val))
-	}
-	return reflect.ValueOf(val)
-}
-
-// convertToTargetType は基本型から名前付き型への変換を行います。
-// 例: int64 -> time.Duration
-func convertToTargetType(rv reflect.Value, targetType reflect.Type) reflect.Value {
-	if rv.Type() != targetType && rv.Type().ConvertibleTo(targetType) {
-		return rv.Convert(targetType)
-	}
-	return rv
+// Finite rounding stays valid; only a finite value becoming infinity overflows.
+func overflowsFloat32(value float64) bool {
+	return !math.IsInf(value, 0) && math.IsInf(float64(float32(value)), 0)
 }
 
 // ConvertArgsToReflectValues converts doggo arguments to reflect.Values.

@@ -66,6 +66,8 @@ func TestCheckerConversionFailures(t *testing.T) {
 		{"raw nil integer", coll.NewVector(nil, atom.NilValue), "nil"},
 		{"overflow", coll.NewVector(atom.NewNumberFloat(math.Exp2(64)), atom.NilValue), "loss"},
 		{"fractional", coll.NewVector(atom.NewNumberFloat(1.5), atom.NilValue), "loss"},
+		{"wrapped fractional", coll.NewVector(atom.NewGoObject(float64(1.5)), atom.NilValue), "loss"},
+		{"wrapped unsigned overflow", coll.NewVector(atom.NewGoObject(uint64(math.MaxUint64)), atom.NilValue), "overflows"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := NewNativeCheckerImpl(&resultInvoker{value: tc.result}, nil, method("check"))
@@ -260,5 +262,54 @@ func TestGeneratedLocalImportCollisions(t *testing.T) {
 	}
 	if n, err := NewNativeValuesCollisionImpl(inv, nil, method("check")).Check(); n != 9 || err != nil {
 		t.Errorf("resultValues import: %d, %v", n, err)
+	}
+}
+
+func TestGeneratedWrappedNumericLoss(t *testing.T) {
+	for _, value := range []any{int64(256), int64(-129), uint64(256), float64(128), float64(1.5)} {
+		inv := &resultInvoker{value: coll.NewVector(atom.NewGoObject(value), atom.NilValue, atom.NilValue, atom.NilValue)}
+		n, ptr, slice, err := NewNativeValuesImpl(inv, nil, method("values")).Values()
+		if n != 0 || ptr != nil || slice != nil || err == nil || !strings.Contains(err.Error(), "Values.Values") || !strings.Contains(err.Error(), "result 0") {
+			t.Errorf("Values(%T(%v)) = %d, %v, %v, %v; want atomic zeros and contextual numeric error", value, value, n, ptr, slice, err)
+		}
+	}
+	for _, value := range []float64{math.MaxFloat64, -math.MaxFloat64} {
+		for _, input := range []types.Value{atom.NewNumberFloat(value), atom.NewGoObject(value)} {
+			inv := &resultInvoker{value: coll.NewVector(input, atom.NilValue)}
+			if n, err := NewNativeFloatImpl(inv, nil, method("float")).Float(); n != 0 || err == nil || !strings.Contains(err.Error(), "Float.Float") || !strings.Contains(err.Error(), "overflows") {
+				t.Errorf("Float(%T(%v)) = %v, %v; want atomic zero and contextual overflow error", input, value, n, err)
+			}
+		}
+	}
+	for _, value := range []types.Value{atom.NewNumberFloat(1.1), atom.NewGoObject(float64(1.1)), atom.NewGoObject(float32(1.1))} {
+		if n, err := NewNativeFloatImpl(&resultInvoker{value: coll.NewVector(value, atom.NilValue)}, nil, method("float")).Float(); n != float32(1.1) || err != nil {
+			t.Errorf("valid rounded float = %v, %v", n, err)
+		}
+	}
+	large := int64((1 << 62) + (1 << 38) + 1)
+	if n, err := NewNativeFloatImpl(&resultInvoker{value: coll.NewVector(atom.NewGoObject(large), atom.NilValue)}, nil, method("float")).Float(); n != float32(float64(large)) || err != nil {
+		t.Errorf("wrapped integer reflection float rounding = %v, %v; want %v", n, err, float32(float64(large)))
+	}
+}
+
+func TestGeneratedComplexNarrowing(t *testing.T) {
+	for _, value := range []complex128{complex(math.MaxFloat64, 1), complex(1, -math.MaxFloat64)} {
+		inv := &resultInvoker{value: coll.NewVector(atom.NewGoObject(value), atom.NilValue)}
+		if n, err := NewNativeComplexImpl(inv, nil, method("complex")).Complex(); n != 0 || err == nil || !strings.Contains(err.Error(), "Complex.Complex") {
+			t.Errorf("Complex(%v) = %v, %v; want contextual overflow error", value, n, err)
+		}
+	}
+	inv := &resultInvoker{value: coll.NewVector(atom.NewGoObject(complex128(1.1+2.2i)), atom.NilValue)}
+	if n, err := NewNativeComplexImpl(inv, nil, method("complex")).Complex(); n != complex64(1.1+2.2i) || err != nil {
+		t.Errorf("valid complex rounding = %v, %v", n, err)
+	}
+}
+
+func TestGeneratedUnsignedNumericLoss(t *testing.T) {
+	for _, value := range []types.Value{atom.NewNumberFloat(1.5), atom.NewGoObject(float64(1.5)), atom.NewGoObject(int64(-1)), atom.NewGoObject(math.Exp2(64))} {
+		inv := &resultInvoker{value: coll.NewVector(value, atom.NilValue)}
+		if n, err := NewNativeUnsignedImpl(inv, nil, method("unsigned")).Unsigned(); n != 0 || err == nil || !strings.Contains(err.Error(), "Unsigned.Unsigned") {
+			t.Errorf("Unsigned(%v) = %v, %v; want contextual numeric error", value, n, err)
+		}
 	}
 }
