@@ -61,7 +61,7 @@ var builtinsSchema = []BuiltinDefinition{
 				return nil, err
 			}
 
-			return schema.Generate(compiled, opts)
+			return schema.GenerateWithContext(ctx, compiled, opts)
 		}},
 	},
 	{
@@ -86,7 +86,7 @@ var builtinsSchema = []BuiltinDefinition{
 				return nil, err
 			}
 
-			values, err := schema.Sample(compiled, count, opts)
+			values, err := schema.SampleWithContext(ctx, compiled, count, opts)
 			if err != nil {
 				return nil, err
 			}
