@@ -184,6 +184,8 @@ doggo exec -- interop.dog
 
 このコードを `reify.dog` に保存して `doggo exec -- reify.dog` を実行すると、結果は `"[Doggo]"` です。`reify` はインポートしたインターフェース型シンボルと、メソッドを実装するマップを受け取ります。`Format` メソッドには `:format` または `:Format` を使えます。
 
+Go メソッドの戻り値が複数ある場合、コールバックは同じ個数の要素を持つベクターを返します。戻り値の変換や要素数の検証に失敗すると、`error` またはその型エイリアスを返すメソッドでは、そのエラーを返し、ほかの戻り値をゼロ値にします。コールバックが返した Go のエラーも保持します。`error` を返さないメソッドでは、コールバックの実行や戻り値の変換に失敗すると、インターフェース名とメソッド名を含む警告を標準エラー出力へ書き、ゼロ値を返します。
+
 `no reify factory registered` が出たら、`doggo mod sync` 後の `doggo.lock` にある `:scan :reify-targets` を確認します。各 target の `:source` は import する型名、`:runtime` は Go の型同一性を固定する canonical identity です。マップで指定する値は関数で、引数の数は Go メソッドと合わせます。
 
 ## 8. ビルドで生成コードを使う

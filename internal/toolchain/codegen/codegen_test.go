@@ -990,7 +990,7 @@ func TestParseInterfaceCollectsExternalImportsAndCanonicalizesParams(t *testing.
 	if want := []ParamInfo{{Name: "arg0", Type: "*http.Request", Value: "arg0"}, {Name: "arg1", Type: "context.Context", Value: "arg1"}, {Name: "arg2", Type: "game.Event", Value: "arg2"}}; !reflect.DeepEqual(method.Params, want) {
 		t.Fatalf("Params = %v, want %v", method.Params, want)
 	}
-	if want := []ResultInfo{{Type: "context.Context"}, {Type: "error"}}; !reflect.DeepEqual(method.Results, want) {
+	if want := []ResultInfo{{Type: "context.Context"}, {Type: "error", IsError: true}}; !reflect.DeepEqual(method.Results, want) {
 		t.Fatalf("Results = %v, want %v", method.Results, want)
 	}
 	if !method.HasError {
@@ -1056,7 +1056,7 @@ func TestReifyTemplateBranches(t *testing.T) {
 			method: InterfaceMethod{
 				Name:     "Update",
 				Params:   []ParamInfo{{Name: "label", Type: "string", Value: "label"}},
-				Results:  []ResultInfo{{Type: "error"}},
+				Results:  []ResultInfo{{Type: "error", IsError: true}},
 				HasError: true,
 			},
 			wantReturnErr: true,
@@ -1092,7 +1092,7 @@ func TestReifyTemplateBranches(t *testing.T) {
 				t.Fatalf("reify warnings must not be written to stdout\noutput:\n%s", output)
 			}
 
-			returnErrPattern := "\tif err != nil {\n\t\treturn err\n\t}\n\treturn unwrapToError(result)"
+			returnErrPattern := "result0, result0Err := unwrapResult[error](resultValues[0])"
 			if got := strings.Contains(output, returnErrPattern); got != tt.wantReturnErr {
 				t.Fatalf("error return presence = %v, want %v\noutput:\n%s", got, tt.wantReturnErr, output)
 			}
