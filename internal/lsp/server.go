@@ -584,7 +584,7 @@ func (s *Server) handleDefinition(msg message) error {
 
 	ns := s.state.index.NamespaceForURI(params.TextDocument.URI)
 	def, found := s.state.index.ResolveDefinition(ns, symbol)
-	if !found {
+	if !found || def.URI == "" {
 		return s.respond(msg.ID, []any{})
 	}
 
@@ -678,6 +678,9 @@ func (s *Server) handleRename(msg message) error {
 		return s.respond(msg.ID, map[string]any{
 			"changes": map[string]any{},
 		})
+	}
+	if def.Kind == "builtin" {
+		return s.respond(msg.ID, map[string]any{"changes": map[string]any{}})
 	}
 	if strings.HasPrefix(def.URI, "stdlib://") {
 		return s.respondError(msg.ID, lspErrorInvalidParams, "cannot rename stdlib symbol")
@@ -2071,6 +2074,8 @@ type occurrenceCollector struct {
 	occurrences        []symbolOccurrence
 	seen               map[string]struct{}
 	quasiquoteDepth    int
+	macroResolver      *toolindex.DocumentMacroResolver
+	defInitializer     string
 }
 
 type occurrenceScope struct {
@@ -2097,6 +2102,7 @@ func newOccurrenceCollector(
 		includeDeclaration: includeDeclaration,
 		occurrences:        make([]symbolOccurrence, 0),
 		seen:               make(map[string]struct{}),
+		macroResolver:      idx.NewDocumentMacroResolver(uri),
 	}
 }
 
@@ -2270,13 +2276,23 @@ func (c *occurrenceCollector) parseList(scope *occurrenceScope, quoted bool) {
 		return
 	}
 
-	switch head.Literal {
+	syntaxHead := c.bindingSyntaxHead(head, scope)
+	switch syntaxHead {
 	case "def", "defonce":
 		c.parseDefLike(scope, quoted)
 	case "defn", "defmacro":
-		c.parseDefnLike(scope, quoted)
+		c.parseDefnLike(scope, quoted, syntaxHead)
+	case "defmulti":
+		c.next()
+		c.consumeMetadataPrefixes()
+		if c.peek().Type == lexer.IDENT {
+			name := c.next()
+			c.handleIdentifier(name, scope, quoted, true, false)
+			c.defineGlobal(name, "defmulti")
+		}
+		c.parseUntil(scope, quoted, lexer.RPAREN)
 	case "defrecord", "deftype":
-		c.parseRecordType(scope, quoted, head.Literal == "deftype")
+		c.parseRecordType(scope, quoted, syntaxHead == "deftype")
 	case "defprotocol":
 		c.parseProtocol(scope, quoted)
 	case "fn":
@@ -2288,10 +2304,16 @@ func (c *occurrenceCollector) parseList(scope *occurrenceScope, quoted bool) {
 		c.parseFnTail(scope, quoted)
 	case "letfn":
 		c.parseLetfnLike(scope, quoted)
-	case "let", "loop", "doseq", "for":
+	case "let", "loop":
 		c.parseLetLike(scope, quoted)
-	case "if-let", "when-let":
-		c.parseIfWhenLet(scope, quoted, head.Literal)
+	case "for":
+		c.parseForLike(scope, quoted)
+	case "doseq", "dotimes":
+		c.parseSingleBindingMacro(scope, quoted, syntaxHead == "dotimes")
+	case "if-let", "when-let", "when-first":
+		c.parseIfWhenLet(scope, quoted, syntaxHead)
+	case "as->":
+		c.parseAsThread(scope, quoted)
 	case "catch":
 		c.parseCatchLike(scope, quoted)
 	case "quasiquote":
@@ -2307,6 +2329,20 @@ func (c *occurrenceCollector) parseList(scope *occurrenceScope, quoted bool) {
 	default:
 		c.parseUntil(scope, quoted, lexer.RPAREN)
 	}
+}
+
+func (c *occurrenceCollector) bindingSyntaxHead(head lexer.Token, scope *occurrenceScope) string {
+	if compiler.IsUnshadowableSpecialForm(head.Literal) || head.Literal == "catch" {
+		return head.Literal
+	}
+	if !strings.Contains(head.Literal, "/") && scope.resolve(head.Literal) {
+		return ""
+	}
+	return c.macroResolver.CoreMacroName(toolindex.PositionFromOffset(c.source, head.Offset), head.Literal, c.defInitializer)
+}
+
+func (c *occurrenceCollector) defineGlobal(name lexer.Token, kind string) string {
+	return c.macroResolver.Define(toolindex.PositionFromOffset(c.source, name.Offset), name.Literal, kind)
 }
 
 func (c *occurrenceCollector) parseNamespaceDeclaration(scope *occurrenceScope) {
@@ -2440,9 +2476,12 @@ func (c *occurrenceCollector) readRequireOperand(namespace bool) (lexer.Token, b
 func (c *occurrenceCollector) parseDefLike(scope *occurrenceScope, quoted bool) {
 	c.next() // def/defonce
 	c.consumeMetadataPrefixes()
+	previousInitializer := c.defInitializer
+	defer func() { c.defInitializer = previousInitializer }()
 	if c.peek().Type == lexer.IDENT {
 		nameTok := c.next()
 		c.handleIdentifier(nameTok, scope, quoted, true, false)
+		c.defInitializer = c.defineGlobal(nameTok, "def")
 	}
 	c.parseUntil(scope, quoted, lexer.RPAREN)
 }
@@ -2451,7 +2490,15 @@ func (c *occurrenceCollector) parseRecordType(scope *occurrenceScope, quoted, im
 	c.next() // defrecord/deftype
 	c.consumeMetadataPrefixes()
 	if c.peek().Type == lexer.IDENT {
-		c.next() // type name is a declaration, not a reference to another global
+		name := c.next() // type name is a declaration, not a reference to another global
+		c.defineGlobal(name, "deftype")
+		constructor := name
+		constructor.Literal = "->" + name.Literal
+		c.defineGlobal(constructor, "defn")
+		if !implicitFields {
+			constructor.Literal = "map->" + name.Literal
+			c.defineGlobal(constructor, "defn")
+		}
 	}
 	c.consumeMetadataPrefixes()
 	var fields []string
@@ -2469,7 +2516,7 @@ func (c *occurrenceCollector) parseRecordType(scope *occurrenceScope, quoted, im
 					methodScope.define(name)
 				}
 			}
-			c.parseProtocolMethod(methodScope, quoted)
+			c.parseProtocolMethod(methodScope, quoted, false)
 		} else {
 			c.parseForm(scope, quoted) // protocol expressions are evaluated globals
 		}
@@ -2483,12 +2530,12 @@ func (c *occurrenceCollector) parseProtocol(scope *occurrenceScope, quoted bool)
 	c.next() // defprotocol
 	c.consumeMetadataPrefixes()
 	if c.peek().Type == lexer.IDENT {
-		c.next() // protocol declaration
+		c.defineGlobal(c.next(), "defprotocol") // protocol declaration
 	}
 	for !c.done() && c.peek().Type != lexer.RPAREN {
 		c.consumeMetadataPrefixes()
 		if c.peek().Type == lexer.LPAREN {
-			c.parseProtocolMethod(newOccurrenceScope(scope), quoted)
+			c.parseProtocolMethod(newOccurrenceScope(scope), quoted, true)
 		} else {
 			c.pos = c.skipOneFormFrom(c.pos)
 		}
@@ -2498,11 +2545,14 @@ func (c *occurrenceCollector) parseProtocol(scope *occurrenceScope, quoted bool)
 	}
 }
 
-func (c *occurrenceCollector) parseProtocolMethod(scope *occurrenceScope, quoted bool) {
+func (c *occurrenceCollector) parseProtocolMethod(scope *occurrenceScope, quoted, globalMethod bool) {
 	c.next() // method list open
 	c.consumeMetadataPrefixes()
 	if c.peek().Type == lexer.IDENT {
-		c.next() // method name is not an evaluated global reference
+		name := c.next() // method name is not an evaluated global reference
+		if globalMethod {
+			c.defineGlobal(name, "defn")
+		}
 	}
 	c.consumeMetadataPrefixes()
 	if c.peek().Type == lexer.LBRACKET {
@@ -2511,12 +2561,19 @@ func (c *occurrenceCollector) parseProtocolMethod(scope *occurrenceScope, quoted
 	c.parseUntil(scope, quoted, lexer.RPAREN)
 }
 
-func (c *occurrenceCollector) parseDefnLike(scope *occurrenceScope, quoted bool) {
+func (c *occurrenceCollector) parseDefnLike(scope *occurrenceScope, quoted bool, kind string) {
 	c.next() // defn/defmacro
 	c.consumeMetadataPrefixes()
+	previousInitializer := c.defInitializer
+	defer func() { c.defInitializer = previousInitializer }()
 	if c.peek().Type == lexer.IDENT {
 		nameTok := c.next()
 		c.handleIdentifier(nameTok, scope, quoted, true, false)
+		if kind == "defmacro" {
+			defer c.defineGlobal(nameTok, kind)
+		} else {
+			c.defInitializer = c.defineGlobal(nameTok, kind)
+		}
 	}
 	if c.peek().Type == lexer.STRING {
 		c.next()
@@ -2608,11 +2665,82 @@ func (c *occurrenceCollector) parseParamVector(scope *occurrenceScope) {
 }
 
 func (c *occurrenceCollector) parseLetLike(scope *occurrenceScope, quoted bool) {
-	c.next() // let/loop/doseq/for
+	c.next() // let/loop
 	child := newOccurrenceScope(scope)
 	c.consumeMetadataPrefixes()
 	if c.peek().Type == lexer.LBRACKET {
 		c.parseBindingVector(child, quoted)
+	}
+	c.parseUntil(child, quoted, lexer.RPAREN)
+}
+
+func (c *occurrenceCollector) parseForLike(scope *occurrenceScope, quoted bool) {
+	c.next() // canonical core for macro
+	child := newOccurrenceScope(scope)
+	c.consumeMetadataPrefixes()
+	if c.peek().Type == lexer.LBRACKET {
+		c.next()
+		for !c.done() && c.peek().Type != lexer.RBRACKET {
+			if c.peek().Type == lexer.KEYWORD {
+				modifier := c.next().Literal
+				c.consumeMetadataPrefixes()
+				if modifier == "let" && c.peek().Type == lexer.LBRACKET {
+					c.parseBindingVector(child, quoted)
+				} else if c.peek().Type != lexer.RBRACKET {
+					c.parseForm(child, quoted) // :when and :while see preceding bindings
+				}
+				continue
+			}
+			names := c.parseBindingPatternNames()
+			if c.peek().Type != lexer.RBRACKET {
+				c.parseForm(child, quoted)
+			}
+			for _, name := range names {
+				child.define(name)
+			}
+		}
+		if c.peek().Type == lexer.RBRACKET {
+			c.next()
+		}
+	}
+	c.parseUntil(child, quoted, lexer.RPAREN)
+}
+
+func (c *occurrenceCollector) parseSingleBindingMacro(scope *occurrenceScope, quoted, bindBeforeValue bool) {
+	c.next() // doseq/dotimes
+	child := newOccurrenceScope(scope)
+	c.consumeMetadataPrefixes()
+	if c.peek().Type == lexer.LBRACKET {
+		c.next()
+		names := c.parseBindingPatternNames()
+		valueScope := scope
+		if bindBeforeValue {
+			// Shipped dotimes inserts its count expression inside the loop body.
+			for _, name := range names {
+				child.define(name)
+			}
+			valueScope = child
+		}
+		if c.peek().Type != lexer.RBRACKET {
+			c.parseForm(valueScope, quoted)
+		}
+		for _, name := range names {
+			child.define(name)
+		}
+		// These macros consume only the first binder/value pair.
+		c.parseUntil(scope, true, lexer.RBRACKET)
+	}
+	c.parseUntil(child, quoted, lexer.RPAREN)
+}
+
+func (c *occurrenceCollector) parseAsThread(scope *occurrenceScope, quoted bool) {
+	c.next() // as->
+	if c.peek().Type != lexer.RPAREN {
+		c.parseForm(scope, quoted) // initial value precedes the local binding
+	}
+	child := newOccurrenceScope(scope)
+	if c.peek().Type != lexer.RPAREN {
+		c.parseBindingPattern(child)
 	}
 	c.parseUntil(child, quoted, lexer.RPAREN)
 }
@@ -2805,7 +2933,7 @@ func (c *occurrenceCollector) parseBindingVector(scope *occurrenceScope, quoted 
 }
 
 func (c *occurrenceCollector) parseIfWhenLet(scope *occurrenceScope, quoted bool, head string) {
-	c.next() // if-let/when-let
+	c.next() // if-let/when-let/when-first
 	child := newOccurrenceScope(scope)
 	c.consumeMetadataPrefixes()
 	if c.peek().Type == lexer.LBRACKET {
@@ -2821,10 +2949,14 @@ func (c *occurrenceCollector) parseIfWhenLet(scope *occurrenceScope, quoted bool
 			child.define(name)
 		}
 	}
+	if head != "if-let" {
+		c.parseUntil(child, quoted, lexer.RPAREN)
+		return
+	}
 	if c.peek().Type != lexer.RPAREN {
 		c.parseForm(child, quoted) // then/body
 	}
-	if head == "if-let" && c.peek().Type != lexer.RPAREN {
+	if c.peek().Type != lexer.RPAREN {
 		c.parseForm(scope, quoted) // else
 	}
 	c.parseUntil(scope, quoted, lexer.RPAREN)
