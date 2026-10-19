@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -18,7 +19,7 @@ class CommitIdentityTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.repository = Path(self.temporary.name)
-        self.git("init", "-q")
+        self.git("init", "-q", "--initial-branch=fixture-base")
         self.number = 0
 
     def git(self, *args, env=None):
@@ -93,16 +94,90 @@ class CommitIdentityTests(unittest.TestCase):
         self.git("config", "log.showSignature", "true")
         self.assertEqual(self.checker.check_identities(self.repository), [])
 
-    def test_ci_checks_complete_history_when_previous_head_is_unavailable(self):
-        self.commit()
-        env = dict(os.environ, COMMIT_BASE="f" * 40)
+    def ci(self, event_name, event):
+        event_path = self.repository / "event.json"
+        event_path.write_text(json.dumps(event), encoding="utf-8")
+        env = dict(os.environ, GITHUB_EVENT_NAME=event_name, GITHUB_EVENT_PATH=str(event_path))
         command = [os.sys.executable, str(SCRIPT), "--repository", str(self.repository), "--ci"]
-        clean = subprocess.run(command, env=env, capture_output=True, text=True)
+        result = subprocess.run(command, env=env, capture_output=True, text=True)
+        self.assertNotIn("@example.invalid", result.stdout + result.stderr)
+        return result
+
+    def push_event(self, head, before=None, ref="refs/heads/topic"):
+        return {"after": head, "before": before or "0" * 40, "ref": ref,
+                "repository": {"default_branch": "main"}}
+
+    def test_pr_checks_submitted_head_not_synthetic_merge(self):
+        base = self.commit(author="legacy@example.invalid")
+        head = self.commit()
+        tree = self.git("rev-parse", "HEAD^{tree}")
+        env = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="merge@example.invalid",
+                   GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="noreply@github.com")
+        merge = self.git("-c", "commit.gpgsign=false", "commit-tree", tree, "-p", base, "-p", head,
+                         "-m", "synthetic merge", env=env)
+        self.git("checkout", "--detach", "-q", merge)
+        event = {"pull_request": {"base": {"sha": base}, "head": {"sha": head}}}
+        clean = self.ci("pull_request", event)
         self.assertEqual(clean.returncode, 0, clean.stderr)
-        self.commit(author="private@example.invalid")
-        private = subprocess.run(command, env=env, capture_output=True, text=True)
+        self.git("checkout", "--detach", "-q", head)
+        bad = self.commit(committer="new@example.invalid")
+        event["pull_request"]["head"]["sha"] = bad
+        self.assertEqual(self.ci("pull_request", event).returncode, 1)
+
+    def test_rebased_feature_push_excludes_only_history_already_in_default_branch(self):
+        self.commit()
+        before = self.git("rev-parse", "HEAD")
+        self.git("checkout", "--orphan", "main")
+        base = self.commit(author="legacy@example.invalid")
+        self.git("update-ref", "refs/remotes/origin/main", base)
+        head = self.commit()
+        clean = self.ci("push", self.push_event(head, before))
+        self.assertEqual(clean.returncode, 0, clean.stderr)
+        bad = self.commit(author="new@example.invalid")
+        self.assertEqual(self.ci("push", self.push_event(bad, head)).returncode, 1)
+        self.assertEqual(len(self.checker.check_identities(self.repository)), 2)
+
+    def test_default_branch_push_checks_new_commits(self):
+        base = self.commit(author="legacy@example.invalid")
+        head = self.commit()
+        event = self.push_event(head, base, "refs/heads/main")
+        clean = self.ci("push", event)
+        self.assertEqual(clean.returncode, 0, clean.stderr)
+        event["after"] = self.commit(committer="new@example.invalid")
+        self.assertEqual(self.ci("push", event).returncode, 1)
+
+    def test_ci_checks_complete_history_when_default_branch_previous_head_is_unavailable(self):
+        head = self.commit()
+        event = self.push_event(head, "f" * 40, "refs/heads/main")
+        clean = self.ci("push", event)
+        self.assertEqual(clean.returncode, 0, clean.stderr)
+        event["after"] = self.commit(author="private@example.invalid")
+        private = self.ci("push", event)
         self.assertEqual(private.returncode, 1)
         self.assertNotIn("private@example.invalid", private.stdout + private.stderr)
+
+    def test_initial_default_branch_and_tag_push_check_all_history(self):
+        head = self.commit(author="legacy@example.invalid")
+        for ref in ["refs/heads/main", "refs/tags/v1"]:
+            with self.subTest(ref=ref):
+                self.assertEqual(self.ci("push", self.push_event(head, ref=ref)).returncode, 1)
+
+    def test_ci_fails_closed_for_missing_or_invalid_required_context(self):
+        head = self.commit()
+        events = [
+            ("pull_request", {}),
+            ("pull_request", {"pull_request": {"base": {"sha": "f" * 40}, "head": {"sha": head}}}),
+            ("pull_request", {"pull_request": {"base": {"sha": head}, "head": {"sha": "--all"}}}),
+            ("push", self.push_event(head)),  # default branch ref is unavailable
+            ("push", {**self.push_event(head), "repository": {"default_branch": "../bad"}}),
+            ("push", {**self.push_event(head), "after": "0" * 40}),
+            ("push", {**self.push_event(head), "before": "--all"}),
+            ("unknown", {}),
+        ]
+        for name, event in events:
+            with self.subTest(name=name, event=event):
+                result = self.ci(name, event)
+                self.assertEqual(result.returncode, 2, result.stderr)
 
 
 if __name__ == "__main__":

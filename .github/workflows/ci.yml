@@ -112,14 +112,23 @@ jobs:
       - name: Test commit identity checks
         run: python .github/scripts/test_commit_identity.py
       - name: Verify new commit identities
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
         run: python .github/scripts/check_commit_identity.py --ci
-        env:
-          COMMIT_BASE: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
       - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
       - run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
       - run: gitleaks git . --log-opts=--all --redact --no-banner
+
+  commit-history:
+    name: Audit complete commit history
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - run: python .github/scripts/check_commit_identity.py
 
   vscode:
     strategy:
