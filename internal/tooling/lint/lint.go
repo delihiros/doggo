@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"doggo/internal/compiler"
 	"doggo/internal/syntax/frontend"
 	toolindex "doggo/internal/tooling/index"
 	"doggo/internal/types"
@@ -49,14 +50,11 @@ func AnalyzeWithOptions(filePath, source string, opts AnalyzeOptions) []Diagnost
 	}
 
 	currentNS := strings.TrimSpace(opts.CurrentNamespace)
-	if ns := namespaceFromForms(forms); ns != "" {
-		currentNS = ns
-	}
 	if currentNS == "" {
-		currentNS = "user"
+		currentNS = compiler.DefaultNamespace
 	}
 
-	issues = append(issues, lintUndefinedSymbols(filePath, forms, currentNS, opts.Index)...)
+	issues = append(issues, lintUndefinedSymbols(filePath, source, forms, currentNS, opts.Index)...)
 	return issues
 }
 
@@ -133,15 +131,33 @@ func lintForms(filePath string, forms []types.Value) []Diagnostic {
 }
 
 type symbolScope struct {
-	parent  *symbolScope
-	symbols map[string]struct{}
+	parent         *symbolScope
+	symbols        map[string]struct{}
+	macroResolver  *toolindex.DocumentMacroResolver
+	defInitializer string
+	source         string
+	lineOffsets    []int
 }
 
 func newScope(parent *symbolScope) *symbolScope {
-	return &symbolScope{
+	scope := &symbolScope{
 		parent:  parent,
 		symbols: make(map[string]struct{}),
 	}
+	if parent != nil {
+		scope.macroResolver = parent.macroResolver
+		scope.defInitializer = parent.defInitializer
+		scope.source = parent.source
+		scope.lineOffsets = parent.lineOffsets
+	}
+	return scope
+}
+
+func (s *symbolScope) position(line, column int) toolindex.Position {
+	if line < 1 || line > len(s.lineOffsets) {
+		return toolindex.Position{Line: line, Column: column}
+	}
+	return toolindex.PositionFromOffset(s.source, s.lineOffsets[line-1]+column-1)
 }
 
 func (s *symbolScope) define(name string) {
@@ -160,16 +176,35 @@ func (s *symbolScope) resolve(name string) bool {
 	return false
 }
 
-func lintUndefinedSymbols(filePath string, forms []types.Value, currentNS string, idx *toolindex.WorkspaceIndex) []Diagnostic {
+func lintUndefinedSymbols(filePath, source string, forms []types.Value, currentNS string, idx *toolindex.WorkspaceIndex) []Diagnostic {
 	issues := make([]Diagnostic, 0)
 	scope := newScope(nil)
+	uri := filePath
+	if !strings.Contains(uri, "://") {
+		uri = toolindex.PathToFileURI(filePath)
+	}
+	scope.macroResolver = idx.NewDocumentMacroResolver(uri)
+	if _, indexed := idx.NamespaceByURI[toolindex.NormalizeURI(uri)]; indexed {
+		// Indexed source starts in user. A later ns form does not change the
+		// compilation context of expressions that precede it.
+		currentNS = compiler.DefaultNamespace
+	}
+	scope.macroResolver.SetCurrentNamespace(currentNS)
+	scope.source = source
+	scope.lineOffsets = []int{0}
+	for offset, ch := range source {
+		if ch == '\n' {
+			scope.lineOffsets = append(scope.lineOffsets, offset+1)
+		}
+	}
 	for _, form := range forms {
-		lintValue(filePath, form, scope, idx, currentNS, 1, 1, &issues)
+		lintValue(filePath, form, scope, idx, scope.macroResolver.CurrentNamespace(), 1, 1, &issues)
 	}
 	return issues
 }
 
 func lintValue(filePath string, v types.Value, scope *symbolScope, idx *toolindex.WorkspaceIndex, currentNS string, line, col int, issues *[]Diagnostic) {
+	currentNS = scope.macroResolver.CurrentNamespace()
 	switch node := v.(type) {
 	case types.Symbol, *types.SymbolWithMeta:
 		name, _ := types.SymbolName(node)
@@ -214,16 +249,30 @@ func lintList(filePath string, list *coll.List, scope *symbolScope, idx *toolind
 		return
 	}
 
-	switch head {
+	syntaxHead := head
+	if !compiler.IsUnshadowableSpecialForm(head) && head != "catch" && head != "require" && head != "syntax-quote" {
+		syntaxHead = ""
+		if strings.Contains(head, "/") || !scope.resolve(head) {
+			syntaxHead = scope.macroResolver.CoreMacroName(scope.position(line, col), head, scope.defInitializer)
+		}
+	}
+	switch syntaxHead {
 	case "quote", "syntax-quote", "quasiquote":
 		return
-	case "ns", "require", "import":
+	case "ns":
+		if len(list.Items) > 1 {
+			if namespace, ok := types.SymbolName(list.Items[1]); ok {
+				scope.macroResolver.SetCurrentNamespace(namespace)
+			}
+		}
+		return
+	case "require", "import":
 		return
 	case "def", "defonce":
 		lintDefLike(filePath, list, scope, idx, currentNS, line, col, issues)
 		return
 	case "defn", "defmacro", "fn":
-		lintFnLike(filePath, list, scope, idx, currentNS, line, col, issues)
+		lintFnLike(filePath, list, scope, idx, currentNS, line, col, issues, syntaxHead)
 		return
 	case "let", "loop":
 		lintLetLike(filePath, list, scope, idx, currentNS, line, col, issues)
@@ -239,6 +288,17 @@ func lintList(filePath string, list *coll.List, scope *symbolScope, idx *toolind
 		return
 	case "catch":
 		lintCatch(filePath, list, scope, idx, currentNS, line, col, issues)
+		return
+	case "defmulti":
+		if len(list.Items) < 2 {
+			return
+		}
+		if name, ok := types.SymbolName(list.Items[1]); ok {
+			scope.macroResolver.Define(scope.position(line, col), name, "defmulti")
+		}
+		for _, item := range list.Items[2:] {
+			lintValue(filePath, item, scope, idx, currentNS, line, col, issues)
+		}
 		return
 	case "var":
 		if len(list.Items) == 2 {
@@ -275,21 +335,35 @@ func isCompilerRecognizedHeadSymbol(symbol string) bool {
 }
 
 func lintDefLike(filePath string, list *coll.List, scope *symbolScope, idx *toolindex.WorkspaceIndex, currentNS string, line, col int, issues *[]Diagnostic) {
-	if len(list.Items) < 3 {
+	if len(list.Items) < 2 {
 		return
+	}
+	previousInitializer := scope.defInitializer
+	defer func() { scope.defInitializer = previousInitializer }()
+	if name, ok := types.SymbolName(list.Items[1]); ok {
+		scope.defInitializer = scope.macroResolver.Define(scope.position(line, col), name, "def")
 	}
 	for _, item := range list.Items[2:] {
 		lintValue(filePath, item, scope, idx, currentNS, line, col, issues)
 	}
 }
 
-func lintFnLike(filePath string, list *coll.List, scope *symbolScope, idx *toolindex.WorkspaceIndex, currentNS string, line, col int, issues *[]Diagnostic) {
+func lintFnLike(filePath string, list *coll.List, scope *symbolScope, idx *toolindex.WorkspaceIndex, currentNS string, line, col int, issues *[]Diagnostic, kind string) {
 	if len(list.Items) < 2 {
 		return
 	}
 	start := 1
-	if head, ok := types.SymbolName(list.Items[0]); ok && head != "fn" {
+	previousInitializer := scope.defInitializer
+	defer func() { scope.defInitializer = previousInitializer }()
+	if kind != "fn" {
 		start = 2
+		if name, ok := types.SymbolName(list.Items[1]); ok {
+			if kind == "defmacro" {
+				defer scope.macroResolver.Define(scope.position(line, col), name, kind)
+			} else {
+				scope.defInitializer = scope.macroResolver.Define(scope.position(line, col), name, kind)
+			}
+		}
 	}
 	if start < len(list.Items) {
 		if _, ok := types.SymbolName(list.Items[start]); ok {
@@ -485,24 +559,6 @@ func isAlwaysAvailableSymbol(symbol string) bool {
 	default:
 		return false
 	}
-}
-
-func namespaceFromForms(forms []types.Value) string {
-	for _, form := range forms {
-		list, ok := form.(*coll.List)
-		if !ok || len(list.Items) < 2 {
-			continue
-		}
-		head, ok := types.SymbolName(list.Items[0])
-		if !ok || head != "ns" {
-			continue
-		}
-		ns, ok := types.SymbolName(list.Items[1])
-		if ok && ns != "" {
-			return ns
-		}
-	}
-	return ""
 }
 
 func isStaticRequireArg(v types.Value) bool {

@@ -56,12 +56,17 @@ type DocumentSymbol struct {
 }
 
 type NamespaceInfo struct {
-	Name     string
-	URI      string
-	Aliases  map[string]string
-	Refers   map[string]ReferBinding // local spelling -> canonical source
-	ReferAll []ReferAllSpec
-	Exclude  map[string]struct{}
+	Name        string
+	URI         string
+	Aliases     map[string]string
+	Refers      map[string]ReferBinding // local spelling -> canonical source
+	ReferAll    []ReferAllSpec
+	CoreRenames map[string]string // local spelling -> canonical core source spelling
+	Exclude     map[string]struct{}
+
+	// Retain explicit inclusion operations when namespace declarations merge.
+	coreIncludes map[string]struct{}
+	coreReferAll bool
 }
 
 type ReferBinding struct {
@@ -106,10 +111,11 @@ type WorkspaceIndex struct {
 	BuiltinSymbols  map[string]struct{}
 	ProjectRootPath string
 
-	sourcesByURI    map[string]string
-	namespaceByURI  map[string][]namespaceContext
-	emittedByURI    map[string]map[string]emittedBinding
-	generationByURI map[string]generationDocument
+	sourcesByURI     map[string]string
+	namespaceByURI   map[string][]namespaceContext
+	emittedByURI     map[string]map[string]emittedBinding
+	generationByURI  map[string]generationDocument
+	ignoredQualified string // initializer-only lookup override in a document resolver
 }
 
 // emittedBinding records collision-only names without making generated or type
@@ -354,6 +360,11 @@ func (i *WorkspaceIndex) CompletionCandidates(currentNS, prefix string) []string
 	}
 
 	if nsInfo := i.NamespaceInfo(currentNS); nsInfo != nil {
+		for name := range nsInfo.CoreRenames {
+			if _, _, ok := i.ResolveDefinitionWithBinding(currentNS, name); ok {
+				add(name)
+			}
+		}
 		for name := range nsInfo.Refers {
 			add(name)
 		}
@@ -377,7 +388,7 @@ func (i *WorkspaceIndex) CompletionCandidates(currentNS, prefix string) []string
 
 	out := make([]string, 0, len(set))
 	for name := range set {
-		if _, blocked := excluded[name]; blocked {
+		if _, blocked := excluded[name]; blocked && !i.HasGlobalBinding(currentNS, name) {
 			continue
 		}
 		out = append(out, name)
@@ -445,11 +456,17 @@ func (i *WorkspaceIndex) ResolveDefinitionWithBinding(currentNS, symbol string) 
 	if def, ok := i.lookup(currentNS, symbol); ok {
 		return def, ReferBinding{}, true
 	}
+	if i.hasEmittedBinding(currentNS, symbol, false) {
+		return SymbolDef{}, ReferBinding{}, false
+	}
 
 	if nsInfo != nil {
 		if binding, ok := nsInfo.Refers[symbol]; ok {
 			if def, ok := i.lookup(binding.Namespace, binding.SourceName); ok {
 				return def, binding, true
+			}
+			if i.hasEmittedBinding(binding.Namespace, binding.SourceName, true) {
+				return SymbolDef{}, ReferBinding{}, false
 			}
 		}
 		for _, spec := range nsInfo.ReferAll {
@@ -457,6 +474,14 @@ func (i *WorkspaceIndex) ResolveDefinitionWithBinding(currentNS, symbol string) 
 				if def, ok := i.lookup(binding.Namespace, binding.SourceName); ok {
 					return def, binding, true
 				}
+				if i.hasEmittedBinding(binding.Namespace, binding.SourceName, true) {
+					return SymbolDef{}, ReferBinding{}, false
+				}
+			}
+		}
+		if source, renamed := nsInfo.CoreRenames[symbol]; renamed {
+			if def, ok := i.resolveCoreDefinition(source); ok {
+				return def, ReferBinding{Namespace: def.Namespace, SourceName: source, ExplicitRename: true}, true
 			}
 		}
 		if _, excluded := nsInfo.Exclude[symbol]; excluded {
@@ -472,6 +497,133 @@ func (i *WorkspaceIndex) ResolveDefinitionWithBinding(currentNS, symbol string) 
 	}
 
 	return SymbolDef{}, ReferBinding{}, false
+}
+
+// Core aliases resolve directly to their canonical source, independently of the
+// importing namespace's aliases. Builtins have no editable source location.
+func (i *WorkspaceIndex) resolveCoreDefinition(name string) (SymbolDef, bool) {
+	if _, builtin := i.BuiltinSymbols[name]; builtin {
+		return SymbolDef{Namespace: compiler.CoreNamespace, Name: name, Qualified: compiler.QualifySymbol(compiler.CoreNamespace, name), Kind: "builtin"}, true
+	}
+	if def, ok := i.lookup(compiler.CoreNamespace, name); ok {
+		return def, true
+	}
+	return i.lookup(compiler.StdlibCoreNamespace, name)
+}
+
+// CoreMacroName identifies shipped macro syntax after global/import resolution.
+// Callers must check lexical bindings before applying the returned grammar.
+func (i *WorkspaceIndex) CoreMacroName(currentNS, symbol string) string {
+	def, ok := i.ResolveDefinition(currentNS, symbol)
+	if ok && def.Kind == "defmacro" && (def.Namespace == compiler.CoreNamespace || def.Namespace == compiler.StdlibCoreNamespace) {
+		return def.Name
+	}
+	return ""
+}
+
+// DocumentMacroResolver keeps declarations from other documents available while
+// applying this document's namespace clauses and global declarations in order.
+// It is private to one source traversal; the workspace index is never mutated.
+type DocumentMacroResolver struct {
+	index          *WorkspaceIndex
+	uri            string
+	contexts       []namespaceContext
+	nextContext    int
+	previousMacros map[string]SymbolDef
+	currentNS      string
+}
+
+func (i *WorkspaceIndex) NewDocumentMacroResolver(uri string) *DocumentMacroResolver {
+	uri = NormalizeURI(uri)
+	view := *i
+	view.Namespaces = make(map[string]*NamespaceInfo)
+	view.ByNamespace = make(map[string]map[string]SymbolDef, len(i.ByNamespace))
+	for ns, defs := range i.ByNamespace {
+		visible := make(map[string]SymbolDef, len(defs))
+		for name, def := range defs {
+			if NormalizeURI(def.URI) != uri {
+				visible[name] = def
+			}
+		}
+		view.ByNamespace[ns] = visible
+	}
+	view.emittedByURI = make(map[string]map[string]emittedBinding, len(i.emittedByURI))
+	for document, bindings := range i.emittedByURI {
+		if document != uri {
+			view.emittedByURI[document] = bindings
+		}
+	}
+	// Keep the same deterministic merge order as the workspace index, excluding
+	// this document's future clauses. Its contexts are applied lazily below.
+	uris := make([]string, 0, len(i.namespaceByURI))
+	for document := range i.namespaceByURI {
+		if document != uri {
+			uris = append(uris, document)
+		}
+	}
+	sort.Strings(uris)
+	for _, document := range uris {
+		for _, context := range i.namespaceByURI[document] {
+			mergeNamespaceInfo(view.getOrCreateNamespace(context.info.Name), context.info)
+		}
+	}
+	return &DocumentMacroResolver{index: &view, uri: uri, contexts: i.namespaceByURI[uri], previousMacros: make(map[string]SymbolDef), currentNS: compiler.DefaultNamespace}
+}
+
+// SetCurrentNamespace supports analyzers visiting a source not yet indexed.
+func (r *DocumentMacroResolver) SetCurrentNamespace(namespace string) {
+	r.currentNS = namespace
+}
+
+func (r *DocumentMacroResolver) CurrentNamespace() string {
+	return r.currentNS
+}
+
+func (r *DocumentMacroResolver) advance(position Position) string {
+	for r.nextContext < len(r.contexts) {
+		context := r.contexts[r.nextContext]
+		if context.start.Line > position.Line || (context.start.Line == position.Line && context.start.Column > position.Column) {
+			break
+		}
+		mergeNamespaceInfo(r.index.getOrCreateNamespace(context.info.Name), context.info)
+		r.currentNS = context.info.Name
+		r.nextContext++
+	}
+	return r.currentNS
+}
+
+// Define records an explicit declaration when the traversal reaches it. Defmacro
+// callers invoke this after its body, matching compiler macro registration.
+func (r *DocumentMacroResolver) Define(position Position, name, kind string) string {
+	ns := r.advance(position)
+	qualified := compiler.QualifySymbol(ns, name)
+	if previous, ok := r.index.lookup(ns, name); ok && previous.Kind == "defmacro" {
+		r.previousMacros[qualified] = previous
+	} else {
+		delete(r.previousMacros, qualified)
+	}
+	if r.index.ByNamespace[ns] == nil {
+		r.index.ByNamespace[ns] = make(map[string]SymbolDef)
+	}
+	r.index.ByNamespace[ns][name] = SymbolDef{Namespace: ns, Name: name, Qualified: qualified, Kind: kind, URI: r.uri}
+	return qualified
+}
+
+func (r *DocumentMacroResolver) CoreMacroName(position Position, symbol, initializer string) string {
+	ns := r.advance(position)
+	if def, ok := r.index.ResolveDefinition(ns, symbol); ok && def.Qualified == initializer {
+		// The compiler's isDefInitBinding exception also remains active while
+		// compiling function bodies inside that initializer.
+		if previous, exists := r.previousMacros[initializer]; exists {
+			if previous.Namespace == compiler.CoreNamespace || previous.Namespace == compiler.StdlibCoreNamespace {
+				return previous.Name
+			}
+			return "" // a prior user macro has no shipped binding grammar
+		}
+		r.index.ignoredQualified = initializer
+		defer func() { r.index.ignoredQualified = "" }()
+	}
+	return r.index.CoreMacroName(ns, symbol)
 }
 
 // HasGlobalBinding also sees globals emitted by core declaration forms, which
@@ -512,6 +664,9 @@ func (i *WorkspaceIndex) HasGlobalBinding(currentNS, symbol string) bool {
 
 func (i *WorkspaceIndex) hasEmittedBinding(ns, name string, referred bool) bool {
 	qualified := compiler.QualifySymbol(ns, name)
+	if qualified == i.ignoredQualified {
+		return false
+	}
 	for _, bindings := range i.emittedByURI {
 		if binding, found := bindings[qualified]; found && (!referred || !binding.protected) {
 			return true
@@ -590,6 +745,9 @@ func (i *WorkspaceIndex) NamespaceInfo(ns string) *NamespaceInfo {
 }
 
 func (i *WorkspaceIndex) lookup(ns, name string) (SymbolDef, bool) {
+	if compiler.QualifySymbol(ns, name) == i.ignoredQualified {
+		return SymbolDef{}, false
+	}
 	defs, ok := i.ByNamespace[ns]
 	if !ok {
 		return SymbolDef{}, false
@@ -901,11 +1059,13 @@ func (i *WorkspaceIndex) getOrCreateNamespace(ns string) *NamespaceInfo {
 		return info
 	}
 	info = &NamespaceInfo{
-		Name:     ns,
-		Aliases:  make(map[string]string),
-		Refers:   make(map[string]ReferBinding),
-		ReferAll: []ReferAllSpec{},
-		Exclude:  make(map[string]struct{}),
+		Name:         ns,
+		Aliases:      make(map[string]string),
+		Refers:       make(map[string]ReferBinding),
+		ReferAll:     []ReferAllSpec{},
+		CoreRenames:  make(map[string]string),
+		Exclude:      make(map[string]struct{}),
+		coreIncludes: make(map[string]struct{}),
 	}
 	i.Namespaces[ns] = info
 	return info
@@ -924,8 +1084,21 @@ func mergeNamespaceInfo(dst, src *NamespaceInfo) {
 	for _, spec := range src.ReferAll {
 		dst.ReferAll = append(dst.ReferAll, cloneReferAllSpec(spec))
 	}
+	for local, source := range src.CoreRenames {
+		dst.CoreRenames[local] = source
+	}
+	if src.coreReferAll {
+		clear(dst.Exclude)
+		clear(dst.coreIncludes)
+		dst.coreReferAll = true
+	}
+	for name := range src.coreIncludes {
+		delete(dst.Exclude, name)
+		dst.coreIncludes[name] = struct{}{}
+	}
 	for name := range src.Exclude {
 		dst.Exclude[name] = struct{}{}
+		delete(dst.coreIncludes, name)
 	}
 }
 
@@ -934,12 +1107,15 @@ func cloneNamespaceInfo(src *NamespaceInfo) *NamespaceInfo {
 		return nil
 	}
 	out := &NamespaceInfo{
-		Name:     src.Name,
-		URI:      src.URI,
-		Aliases:  make(map[string]string, len(src.Aliases)),
-		Refers:   make(map[string]ReferBinding, len(src.Refers)),
-		ReferAll: make([]ReferAllSpec, 0, len(src.ReferAll)),
-		Exclude:  make(map[string]struct{}, len(src.Exclude)),
+		Name:         src.Name,
+		URI:          src.URI,
+		Aliases:      make(map[string]string, len(src.Aliases)),
+		Refers:       make(map[string]ReferBinding, len(src.Refers)),
+		ReferAll:     make([]ReferAllSpec, 0, len(src.ReferAll)),
+		CoreRenames:  make(map[string]string, len(src.CoreRenames)),
+		Exclude:      make(map[string]struct{}, len(src.Exclude)),
+		coreIncludes: make(map[string]struct{}, len(src.coreIncludes)),
+		coreReferAll: src.coreReferAll,
 	}
 	for alias, ns := range src.Aliases {
 		out.Aliases[alias] = ns
@@ -949,6 +1125,12 @@ func cloneNamespaceInfo(src *NamespaceInfo) *NamespaceInfo {
 	}
 	for _, spec := range src.ReferAll {
 		out.ReferAll = append(out.ReferAll, cloneReferAllSpec(spec))
+	}
+	for local, source := range src.CoreRenames {
+		out.CoreRenames[local] = source
+	}
+	for name := range src.coreIncludes {
+		out.coreIncludes[name] = struct{}{}
 	}
 	for name := range src.Exclude {
 		out.Exclude[name] = struct{}{}
@@ -1049,11 +1231,13 @@ func parseNamespaceDecl(list *coll.List) (string, *NamespaceInfo) {
 	}
 
 	info := &NamespaceInfo{
-		Name:     nsName,
-		Aliases:  make(map[string]string),
-		Refers:   make(map[string]ReferBinding),
-		ReferAll: []ReferAllSpec{},
-		Exclude:  make(map[string]struct{}),
+		Name:         nsName,
+		Aliases:      make(map[string]string),
+		Refers:       make(map[string]ReferBinding),
+		ReferAll:     []ReferAllSpec{},
+		CoreRenames:  make(map[string]string),
+		Exclude:      make(map[string]struct{}),
+		coreIncludes: make(map[string]struct{}),
 	}
 
 	idx := 2
@@ -1189,19 +1373,44 @@ func parseReferClojureClause(info *NamespaceInfo, clause *coll.List) {
 		if !ok {
 			continue
 		}
-		if string(kw) != "exclude" {
-			continue
-		}
-		vec, ok := clause.Items[i+1].(*coll.Vector)
-		if !ok {
-			continue
-		}
-		for _, item := range vec.Items {
-			name, ok := symbolFromValue(item)
-			if !ok || name == "" {
+		value := clause.Items[i+1]
+		switch string(kw) {
+		case "exclude", "refer":
+			if keyword, ok := value.(atom.Keyword); ok && string(kw) == "refer" && string(keyword) == "all" {
+				clear(info.Exclude)
+				clear(info.coreIncludes)
+				info.coreReferAll = true
 				continue
 			}
-			info.Exclude[name] = struct{}{}
+			vec, ok := value.(*coll.Vector)
+			if !ok {
+				continue
+			}
+			for _, item := range vec.Items {
+				name, ok := symbolFromValue(item)
+				if !ok || name == "" {
+					continue
+				}
+				if string(kw) == "exclude" {
+					info.Exclude[name] = struct{}{}
+					delete(info.coreIncludes, name)
+				} else {
+					delete(info.Exclude, name)
+					info.coreIncludes[name] = struct{}{}
+				}
+			}
+		case "rename":
+			if renames, ok := value.(*coll.Map); ok {
+				for _, entry := range renames.AllEntries() {
+					source, sourceOK := symbolFromValue(entry.Key)
+					local, localOK := symbolFromValue(entry.Value)
+					if sourceOK && localOK && source != "" && local != "" {
+						info.CoreRenames[local] = source
+						info.Exclude[source] = struct{}{}
+						delete(info.coreIncludes, source)
+					}
+				}
+			}
 		}
 	}
 }
