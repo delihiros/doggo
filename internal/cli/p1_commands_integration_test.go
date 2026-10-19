@@ -430,6 +430,53 @@ func TestApp_Run_TestCommand_DefaultInvocationUsesHostStdlibRuntime(t *testing.T
 	}
 }
 
+func TestApp_Run_TestCommand_ProcessCompletionWaitsForSlowChild(t *testing.T) {
+	repoRoot := findRepoRootForCLITest(t)
+	projectRoot := t.TempDir()
+	writeModAndLock(t, projectRoot)
+	if err := copyDir(filepath.Join(repoRoot, "stdlib"), filepath.Join(projectRoot, "stdlib")); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(projectRoot, "stdlib", "doggo", "process_test.dog")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(data)
+	start := strings.Index(source, "(t/deftest wait-for-returns-completed-exit-values\n")
+	end := strings.Index(source, "(t/deftest wait-for-rejects-invalid-timeouts\n")
+	prefix := strings.Index(source, "(t/deftest ")
+	if prefix < 0 || start < prefix || end <= start {
+		t.Fatal("missing process completion fixture")
+	}
+	// Exercise the real stdlib test with child execution delayed beyond its old
+	// one-second assumption, on both native Windows and Unix shells.
+	fixture := source[start:end]
+	for _, exit := range []string{"0", "7"} {
+		old := `"exit ` + exit + `"`
+		delayed := `(if windows? "Start-Sleep -Milliseconds 1500; exit ` + exit + `" "sleep 1.5; exit ` + exit + `")`
+		if strings.Count(fixture, old) != 1 {
+			t.Fatalf("missing exit %s fixture", exit)
+		}
+		fixture = strings.Replace(fixture, old, delayed, 1)
+	}
+	fixture = source[:prefix] + fixture
+	if err := os.WriteFile(path, []byte(fixture), 0644); err != nil {
+		t.Fatal(err)
+	}
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(oldWD)
+	if err := os.Chdir(projectRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewApp("1.0.0", []string{"test", "stdlib/doggo/process_test.dog"}).Run(); err != nil {
+		t.Fatalf("completed exit values must not depend on child startup latency: %v", err)
+	}
+}
+
 func TestRunFileWithProfilingUsesProjectStdlibCoreFromScriptProjectRoot(t *testing.T) {
 	projectRoot := t.TempDir()
 	writeModAndLock(t, projectRoot)

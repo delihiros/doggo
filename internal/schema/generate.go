@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 
@@ -82,11 +83,21 @@ func (e *GenerateError) ExceptionData() *doggoerr.ExceptionData {
 }
 
 func Generate(schema *Schema, opts GenerateOptions) (types.Value, error) {
+	return GenerateWithContext(context.Background(), schema, opts)
+}
+
+// GenerateWithContext retains the caller context when validating generated values.
+func GenerateWithContext(ctx context.Context, schema *Schema, opts GenerateOptions) (types.Value, error) {
 	rng := rand.New(rand.NewSource(opts.Seed))
-	return generateWithRNG(schema, rng, normalizeGenerateOptions(opts), nil)
+	return generateWithRNG(ctx, schema, rng, normalizeGenerateOptions(opts), nil)
 }
 
 func Sample(schema *Schema, n int, opts GenerateOptions) ([]types.Value, error) {
+	return SampleWithContext(context.Background(), schema, n, opts)
+}
+
+// SampleWithContext retains the caller context for every generated sample.
+func SampleWithContext(ctx context.Context, schema *Schema, n int, opts GenerateOptions) ([]types.Value, error) {
 	if n < 0 {
 		return nil, &GenerateError{Schema: schema, Reason: "invalid sample size", Message: fmt.Sprintf("sample count must be non-negative, got %d", n)}
 	}
@@ -95,7 +106,7 @@ func Sample(schema *Schema, n int, opts GenerateOptions) ([]types.Value, error) 
 	norm := normalizeGenerateOptions(opts)
 	values := make([]types.Value, 0, n)
 	for i := 0; i < n; i++ {
-		value, err := generateWithRNG(schema, rng, norm, nil)
+		value, err := generateWithRNG(ctx, schema, rng, norm, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -119,12 +130,12 @@ func boundedGenerateSize(size int) int {
 	return size
 }
 
-func generateWithRNG(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
+func generateWithRNG(ctx context.Context, schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
 	if schema == nil {
 		return nil, &GenerateError{Path: path, Reason: "nil schema", Message: "schema cannot be nil"}
 	}
 
-	if value, handled, err := generateOverride(schema, rng, opts, path); handled {
+	if value, handled, err := generateOverride(ctx, schema, rng, opts, path); handled {
 		return value, err
 	}
 
@@ -151,23 +162,23 @@ func generateWithRNG(schema *Schema, rng *rand.Rand, opts GenerateOptions, path 
 		}
 		return atom.NewNumberFloat(rng.Float64() * float64(opts.Size+1)), nil
 	case KindMaybe:
-		return generateMaybe(schema, rng, opts, path)
+		return generateMaybe(ctx, schema, rng, opts, path)
 	case KindVector:
-		return generateVector(schema, rng, opts, path)
+		return generateVector(ctx, schema, rng, opts, path)
 	case KindSet:
-		return generateSet(schema, rng, opts, path)
+		return generateSet(ctx, schema, rng, opts, path)
 	case KindList:
-		return generateList(schema, rng, opts, path)
+		return generateList(ctx, schema, rng, opts, path)
 	case KindSeq:
-		return generateSeq(schema, rng, opts, path)
+		return generateSeq(ctx, schema, rng, opts, path)
 	case KindTuple:
-		return generateTuple(schema, rng, opts, path)
+		return generateTuple(ctx, schema, rng, opts, path)
 	case KindMap:
-		return generateMap(schema, rng, opts, path)
+		return generateMap(ctx, schema, rng, opts, path)
 	case KindMapOf:
-		return generateMapOf(schema, rng, opts, path)
+		return generateMapOf(ctx, schema, rng, opts, path)
 	case KindOr:
-		return generateOr(schema, rng, opts, path)
+		return generateOr(ctx, schema, rng, opts, path)
 	case KindEnum:
 		return generateEnum(schema, rng, path)
 	case KindPredicate:
@@ -179,7 +190,7 @@ func generateWithRNG(schema *Schema, rng *rand.Rand, opts GenerateOptions, path 
 	}
 }
 
-func generateOverride(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, bool, error) {
+func generateOverride(ctx context.Context, schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, bool, error) {
 	if len(opts.GeneratorOverrides) == 0 {
 		return nil, false, nil
 	}
@@ -194,15 +205,15 @@ func generateOverride(schema *Schema, rng *rand.Rand, opts GenerateOptions, path
 		if err != nil {
 			return nil, true, &GenerateError{Path: path, Schema: schema, Reason: "override generator failed", Message: err.Error(), Cause: err}
 		}
-		return validateGeneratedValue(schema, value, path, "override generator produced invalid value")
+		return validateGeneratedValue(ctx, schema, value, path, "override generator produced invalid value")
 	case func(*Schema, *rand.Rand, GenerateOptions) (types.Value, error):
 		value, err := generator(schema, rng, opts)
 		if err != nil {
 			return nil, true, &GenerateError{Path: path, Schema: schema, Reason: "override generator failed", Message: err.Error(), Cause: err}
 		}
-		return validateGeneratedValue(schema, value, path, "override generator produced invalid value")
+		return validateGeneratedValue(ctx, schema, value, path, "override generator produced invalid value")
 	case types.Value:
-		return validateGeneratedValue(schema, generator, path, "override value does not satisfy schema")
+		return validateGeneratedValue(ctx, schema, generator, path, "override value does not satisfy schema")
 	default:
 		return nil, true, &GenerateError{
 			Path:        path,
@@ -215,8 +226,8 @@ func generateOverride(schema *Schema, rng *rand.Rand, opts GenerateOptions, path
 	}
 }
 
-func validateGeneratedValue(schema *Schema, value types.Value, path Path, reason string) (types.Value, bool, error) {
-	if Validate(schema, value) {
+func validateGeneratedValue(ctx context.Context, schema *Schema, value types.Value, path Path, reason string) (types.Value, bool, error) {
+	if ValidateWithContext(ctx, schema, value) {
 		return value, true, nil
 	}
 	return nil, true, &GenerateError{
@@ -227,7 +238,7 @@ func validateGeneratedValue(schema *Schema, value types.Value, path Path, reason
 	}
 }
 
-func generateMaybe(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
+func generateMaybe(ctx context.Context, schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
 	if schema.element == nil {
 		return nil, &GenerateError{Path: path, Schema: schema, Reason: "underconstrained schema", Message: "maybe schema has no child schema"}
 	}
@@ -236,14 +247,14 @@ func generateMaybe(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Pa
 	}
 	childOpts := opts
 	childOpts.Size = boundedGenerateSize(opts.Size - 1)
-	return generateWithRNG(schema.element, rng, childOpts, path.Push(atom.NewKeyword("value")))
+	return generateWithRNG(ctx, schema.element, rng, childOpts, path.Push(atom.NewKeyword("value")))
 }
 
-func generateVector(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
-	return generateCollection(schema, rng, opts, path, func(items []types.Value) types.Value { return coll.NewVector(items...) })
+func generateVector(ctx context.Context, schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
+	return generateCollection(ctx, schema, rng, opts, path, func(items []types.Value) types.Value { return coll.NewVector(items...) })
 }
 
-func generateSet(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
+func generateSet(ctx context.Context, schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
 	if schema.element == nil {
 		return nil, &GenerateError{Path: path, Schema: schema, Reason: "underconstrained schema", Message: fmt.Sprintf("schema kind %s requires an element schema", schema.kind)}
 	}
@@ -256,7 +267,7 @@ func generateSet(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path
 	seen := coll.NewSet()
 	for len(items) < target && attemptsRemaining > 0 {
 		attemptsRemaining--
-		item, err := generateWithRNG(schema.element, rng, childOpts, path.Push(indexValue(len(items))))
+		item, err := generateWithRNG(ctx, schema.element, rng, childOpts, path.Push(indexValue(len(items))))
 		if err != nil {
 			return nil, err
 		}
@@ -269,15 +280,15 @@ func generateSet(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path
 	return coll.NewSet(items...), nil
 }
 
-func generateList(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
-	return generateCollection(schema, rng, opts, path, func(items []types.Value) types.Value { return coll.NewList(items...) })
+func generateList(ctx context.Context, schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
+	return generateCollection(ctx, schema, rng, opts, path, func(items []types.Value) types.Value { return coll.NewList(items...) })
 }
 
-func generateSeq(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
-	return generateCollection(schema, rng, opts, path, func(items []types.Value) types.Value { return coll.NewList(items...) })
+func generateSeq(ctx context.Context, schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
+	return generateCollection(ctx, schema, rng, opts, path, func(items []types.Value) types.Value { return coll.NewList(items...) })
 }
 
-func generateCollection(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path, build func([]types.Value) types.Value) (types.Value, error) {
+func generateCollection(ctx context.Context, schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path, build func([]types.Value) types.Value) (types.Value, error) {
 	if schema.element == nil {
 		return nil, &GenerateError{Path: path, Schema: schema, Reason: "underconstrained schema", Message: fmt.Sprintf("schema kind %s requires an element schema", schema.kind)}
 	}
@@ -287,7 +298,7 @@ func generateCollection(schema *Schema, rng *rand.Rand, opts GenerateOptions, pa
 	childOpts := opts
 	childOpts.Size = boundedGenerateSize(opts.Size - 1)
 	for i := 0; i < count; i++ {
-		item, err := generateWithRNG(schema.element, rng, childOpts, path.Push(indexValue(i)))
+		item, err := generateWithRNG(ctx, schema.element, rng, childOpts, path.Push(indexValue(i)))
 		if err != nil {
 			return nil, err
 		}
@@ -296,12 +307,12 @@ func generateCollection(schema *Schema, rng *rand.Rand, opts GenerateOptions, pa
 	return build(items), nil
 }
 
-func generateTuple(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
+func generateTuple(ctx context.Context, schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
 	items := make([]types.Value, 0, len(schema.items))
 	childOpts := opts
 	childOpts.Size = boundedGenerateSize(opts.Size - 1)
 	for i, child := range schema.items {
-		value, err := generateWithRNG(child, rng, childOpts, path.Push(indexValue(i)))
+		value, err := generateWithRNG(ctx, child, rng, childOpts, path.Push(indexValue(i)))
 		if err != nil {
 			return nil, err
 		}
@@ -310,12 +321,12 @@ func generateTuple(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Pa
 	return coll.NewVector(items...), nil
 }
 
-func generateMap(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
+func generateMap(ctx context.Context, schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
 	pairs := make([]types.Value, 0, len(schema.entries)*2)
 	childOpts := opts
 	childOpts.Size = boundedGenerateSize(opts.Size - 1)
 	for _, entry := range schema.entries {
-		value, err := generateWithRNG(entry.Schema, rng, childOpts, path.Push(entry.Key))
+		value, err := generateWithRNG(ctx, entry.Schema, rng, childOpts, path.Push(entry.Key))
 		if err != nil {
 			return nil, err
 		}
@@ -324,7 +335,7 @@ func generateMap(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path
 	return coll.NewMapFromPairs(pairs), nil
 }
 
-func generateMapOf(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
+func generateMapOf(ctx context.Context, schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
 	if schema.keySchema == nil || schema.valueSchema == nil {
 		return nil, &GenerateError{Path: path, Schema: schema, Reason: "underconstrained schema", Message: "map-of schema requires key and value schemas"}
 	}
@@ -338,14 +349,14 @@ func generateMapOf(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Pa
 	for len(pairs)/2 < target && attemptsRemaining > 0 {
 		idx := len(pairs) / 2
 		attemptsRemaining--
-		key, err := generateWithRNG(schema.keySchema, rng, childOpts, path.Push(indexValue(idx)).Push(atom.NewKeyword("key")))
+		key, err := generateWithRNG(ctx, schema.keySchema, rng, childOpts, path.Push(indexValue(idx)).Push(atom.NewKeyword("key")))
 		if err != nil {
 			return nil, err
 		}
 		if seenKeys.Contains(key) {
 			continue
 		}
-		value, err := generateWithRNG(schema.valueSchema, rng, childOpts, path.Push(indexValue(idx)).Push(atom.NewKeyword("value")))
+		value, err := generateWithRNG(ctx, schema.valueSchema, rng, childOpts, path.Push(indexValue(idx)).Push(atom.NewKeyword("value")))
 		if err != nil {
 			return nil, err
 		}
@@ -355,14 +366,14 @@ func generateMapOf(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Pa
 	return coll.NewMapFromPairs(pairs), nil
 }
 
-func generateOr(schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
+func generateOr(ctx context.Context, schema *Schema, rng *rand.Rand, opts GenerateOptions, path Path) (types.Value, error) {
 	if len(schema.items) == 0 {
 		return nil, &GenerateError{Path: path, Schema: schema, Reason: "underconstrained schema", Message: "or schema requires at least one branch"}
 	}
 	branch := rng.Intn(len(schema.items))
 	childOpts := opts
 	childOpts.Size = boundedGenerateSize(opts.Size - 1)
-	return generateWithRNG(schema.items[branch], rng, childOpts, path.Push(indexValue(branch)))
+	return generateWithRNG(ctx, schema.items[branch], rng, childOpts, path.Push(indexValue(branch)))
 }
 
 func generateEnum(schema *Schema, rng *rand.Rand, path Path) (types.Value, error) {

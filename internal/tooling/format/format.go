@@ -1,6 +1,10 @@
 package format
 
-import "strings"
+import (
+	"strings"
+
+	"doggo/internal/lexer"
+)
 
 // Diagnostic は format の診断情報です。
 type Diagnostic struct {
@@ -104,6 +108,12 @@ func splitSourceLines(source string) []sourceLine {
 				} else if source[i] == '"' {
 					state.inString = false
 				}
+			} else if source[i] == '\\' {
+				i = characterLiteralEnd(source, i) - 1
+				// A raw CR/LF character still needs the line-ending path below.
+				if source[i] == '\r' || source[i] == '\n' {
+					i--
+				}
 			} else if source[i] == '"' {
 				state.inString = true
 			} else if source[i] == ';' {
@@ -130,6 +140,11 @@ func splitSourceLines(source string) []sourceLine {
 		lines = append(lines, sourceLine{text: source[start:]})
 	}
 	return lines
+}
+
+// Use the reader's character-token grammar so escaped delimiters are data.
+func characterLiteralEnd(source string, start int) int {
+	return start + lexer.New(source[start:]).NextToken().EndOffset
 }
 
 func detectLineEnding(lines []sourceLine) string {
@@ -173,6 +188,11 @@ func analyzeLine(line string, currentDepth int, state lineState) (int, int, line
 			continue
 		}
 
+		if ch == '\\' {
+			leadingPhase = false
+			i = characterLiteralEnd(line, i) - 1
+			continue
+		}
 		if ch == ';' {
 			break
 		}

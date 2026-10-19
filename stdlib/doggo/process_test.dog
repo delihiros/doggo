@@ -165,23 +165,48 @@
     (t/is (= 0 @(proc/exit-ref proc-handle)))))
 
 (t/deftest start-exposes-polling-helpers
-  (let [running (shell-start "sleep 0.2; exit 0")
-      timeout-result (proc/wait-for running 1)
-      alive-after-timeout (proc/alive? running)
-      running-exit (proc/wait-for running 1000)]
-    (t/is (= nil timeout-result))
-    (t/is (= true alive-after-timeout))
-    (t/is (= 0 running-exit))
+  (let [ready-path (io/join-path process-test-dir "poll-ready.txt")
+      release-path (io/join-path process-test-dir "poll-release.txt")
+      _ (io/make-parents ready-path)
+      running (shell-start
+        (if windows?
+          (str "[IO.File]::WriteAllText('" (str/replace ready-path "'" "''")
+            "', 'ready'); while (-not [IO.File]::Exists('"
+            (str/replace release-path "'" "''")
+            "')) { Start-Sleep -Milliseconds 10 }; exit 0")
+          (str "printf ready > \"" ready-path
+            "\"; while [ ! -f \"" release-path "\" ]; do sleep 0.01; done; exit 0"))
+        {:timeout 60000})]
+    (try
+      (loop [attempt 0]
+        (if (or (io/exists? ready-path) (= attempt 3000))
+          nil
+          (do (time/sleep 10) (recur (inc attempt)))))
+      (t/is (io/exists? ready-path))
+      ; The release gate keeps the process alive even if this runner is paused.
+      (t/is (= nil (proc/wait-for running 1)))
+      (t/is (= nil (proc/wait-for running (time/millis 1))))
+      (t/is (= true (proc/alive? running)))
+      (t/is (= false (proc/exited? running)))
+      (finally (io/spit release-path "release")))
+    (t/is (= 0 @(proc/exit-ref running)))
+    (t/is (= 0 (proc/wait-for running 0)))
     (t/is (= false (proc/alive? running)))
     (t/is (= true (proc/exited? running)))
     (t/is (= 0 (proc/exit-value running)))
     (t/is (= 0 @(proc/exit-ref running)))))
 
 (t/deftest wait-for-returns-completed-exit-values
-  (let [ok (shell-start "exit 0")
-      failed (shell-start "exit 7")
-      ok-exit (proc/wait-for ok (time/millis 1000))
-      failed-exit (proc/wait-for failed 1000)]
+  (let [ok (shell-start "exit 0" {:timeout 30000})
+      failed (shell-start "exit 7" {:timeout 30000})
+      ; Bound hung fixtures with process timeouts, then check completed values
+      ; independently of shell startup time and CI scheduling delays.
+      ok-completed @(proc/exit-ref ok)
+      failed-completed @(proc/exit-ref failed)
+      ok-exit (proc/wait-for ok (time/millis 1))
+      failed-exit (proc/wait-for failed 0)]
+    (t/is (= 0 ok-completed))
+    (t/is (= 7 failed-completed))
     (t/is (= 0 ok-exit))
     (t/is (= true (proc/exited? ok)))
     (t/is (= 0 (proc/exit-value ok)))

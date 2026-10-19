@@ -128,7 +128,7 @@ func Check(ctx context.Context, property types.Fn, schema *Schema, opts CheckOpt
 	}
 
 	for iteration := 1; iteration <= norm.iterations; iteration++ {
-		input, args, err := generateCheckInput(schema, rng, genOpts)
+		input, args, err := generateCheckInput(ctx, schema, rng, genOpts)
 		if err != nil {
 			return nil, err
 		}
@@ -216,8 +216,8 @@ func normalizeCheckOptions(schema *Schema, opts CheckOptions) (normalizedCheckOp
 	}, validateCheckGeneratorOverrides(schema, opts.GeneratorOverrides)
 }
 
-func generateCheckInput(schema *Schema, rng *rand.Rand, opts GenerateOptions) (types.Value, []types.Value, error) {
-	value, err := generateWithRNG(schema, rng, normalizeGenerateOptions(opts), nil)
+func generateCheckInput(ctx context.Context, schema *Schema, rng *rand.Rand, opts GenerateOptions) (types.Value, []types.Value, error) {
+	value, err := generateWithRNG(ctx, schema, rng, normalizeGenerateOptions(opts), nil)
 	if err != nil {
 		return nil, nil, err
 	}
