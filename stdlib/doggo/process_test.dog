@@ -217,28 +217,62 @@
         (t/is (= 0 @(proc/exit-ref proc-handle)))
         (t/is (= false (proc/alive? proc-handle)))))))
 
+; The child cannot produce its marker until the test releases it. A fixed
+; sleep after readiness races with a descheduled test runner. Inherited output
+; pipes also let the test wait for child termination instead of guessing a delay.
+(def start-gated-background-child
+  (fn [marker-path ready-path release-path]
+    (shell-start
+      (if windows?
+        (str "$script = \"[IO.File]::WriteAllText('"
+          (str/replace ready-path "'" "''")
+          "', 'ready'); while (-not [IO.File]::Exists('"
+          (str/replace release-path "'" "''")
+          "')) { Start-Sleep -Milliseconds 10 }; [IO.File]::WriteAllText('"
+          (str/replace marker-path "'" "''")
+          "', 'orphan')\"; $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script)); $start = New-Object Diagnostics.ProcessStartInfo; $start.FileName = (Get-Process -Id $PID).Path; $start.Arguments = '-NoLogo -NoProfile -NonInteractive -EncodedCommand ' + $encoded; $start.UseShellExecute = $false; $start.CreateNoWindow = $true; $child = [Diagnostics.Process]::Start($start); $child.WaitForExit(); exit $child.ExitCode")
+        (str "sh -c 'printf ready > \"" ready-path
+          "\"; while [ ! -f \"" release-path
+          "\" ]; do sleep 0.01; done; printf orphan > \"" marker-path
+          "\"' & wait"))
+      {:timeout 10000})))
+
+(def wait-for-child-ready
+  (fn [ready-path]
+    (loop [attempt 0]
+      (if (or (io/exists? ready-path) (= attempt 500))
+        nil
+        (do (time/sleep 10) (recur (inc attempt)))))
+    (t/is (io/exists? ready-path))))
+
+(t/deftest background-child-fixture-produces-marker-when-released
+  (if (proc/process-tree-supported?)
+    (let [marker-path (io/join-path process-test-dir "released-child.txt")
+        ready-path (io/join-path process-test-dir "released-child-ready.txt")
+        release-path (io/join-path process-test-dir "release-live-child.txt")
+        _ (io/make-parents ready-path)
+        proc-handle (start-gated-background-child marker-path ready-path release-path)]
+      (wait-for-child-ready ready-path)
+      (t/is (= false (io/exists? marker-path)))
+      (io/spit release-path "release")
+      (t/is (= 0 @(proc/exit-ref proc-handle)))
+      (t/is (= "" (io/slurp (proc/stdout proc-handle))))
+      (t/is (= "" (io/slurp (proc/stderr proc-handle))))
+      (t/is (= "orphan" (io/slurp marker-path))))))
+
 (t/deftest kill-tree-stops-background-child-processes
   (if (proc/process-tree-supported?)
     (let [marker-path (io/join-path process-test-dir "killed-child.txt")
         ready-path (io/join-path process-test-dir "child-ready.txt")
+        release-path (io/join-path process-test-dir "release-killed-child.txt")
         _ (io/make-parents ready-path)
-        proc-handle (shell-start
-          (if windows?
-            (str "$script = \"[IO.File]::WriteAllText('"
-              (str/replace ready-path "'" "''")
-              "', 'ready'); Start-Sleep -Milliseconds 500; [IO.File]::WriteAllText('"
-              (str/replace marker-path "'" "''")
-              "', 'orphan')\"; $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script)); $start = New-Object Diagnostics.ProcessStartInfo; $start.FileName = (Get-Process -Id $PID).Path; $start.Arguments = '-NoLogo -NoProfile -NonInteractive -EncodedCommand ' + $encoded; $start.UseShellExecute = $false; $start.CreateNoWindow = $true; $child = [Diagnostics.Process]::Start($start); Start-Sleep -Seconds 5")
-            (str "sh -lc 'printf ready > \"" ready-path "\"; sleep 0.5; printf orphan > "
-              "\"" marker-path "\""
-              "' & sleep 5")))]
-      (loop [attempt 0]
-        (if (or (io/exists? ready-path) (= attempt 500))
-          nil
-          (do (time/sleep 10) (recur (inc attempt)))))
-      (t/is (io/exists? ready-path))
+        proc-handle (start-gated-background-child marker-path ready-path release-path)]
+      (wait-for-child-ready ready-path)
+      (t/is (= false (io/exists? marker-path)))
       (t/is (not= 0 (proc/kill-tree proc-handle)))
-      (time/sleep 600)
+      (io/spit release-path "release")
+      (t/is (= "" (io/slurp (proc/stdout proc-handle))))
+      (t/is (= "" (io/slurp (proc/stderr proc-handle))))
       (t/is (= false (io/exists? marker-path))))
     (let [proc-handle (shell-start "sleep 0.2")]
       (t/is (t/thrown-with-msg?
