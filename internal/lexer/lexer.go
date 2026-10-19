@@ -571,6 +571,11 @@ func (l *Lexer) readKeyword() string {
 func (l *Lexer) readCharLiteral() string {
 	l.readChar() // '\' をスキップ
 	start := l.position
+	// The first escaped delimiter is the character itself, not the next token.
+	if l.ch != 0 && isCharTerminator(l.ch) {
+		l.readChar()
+		return l.input[start:l.position]
+	}
 	for l.ch != 0 && !isCharTerminator(l.ch) {
 		l.readChar()
 	}

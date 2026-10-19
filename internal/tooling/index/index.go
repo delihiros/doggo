@@ -59,9 +59,39 @@ type NamespaceInfo struct {
 	Name     string
 	URI      string
 	Aliases  map[string]string
-	Refers   map[string]string
-	ReferAll []string
+	Refers   map[string]ReferBinding // local spelling -> canonical source
+	ReferAll []ReferAllSpec
 	Exclude  map[string]struct{}
+}
+
+type ReferBinding struct {
+	Namespace      string
+	SourceName     string
+	ExplicitRename bool
+}
+
+// Keep each :refer :all spec separate: the same source may also be imported
+// without its alias by another spec.
+type ReferAllSpec struct {
+	Namespace string
+	Renames   map[string]string // source spelling -> fixed local spelling
+}
+
+func (i *WorkspaceIndex) referAllBindingForLocal(s ReferAllSpec, local string) (ReferBinding, bool) {
+	for source, alias := range s.Renames {
+		if alias == local {
+			// :refer :all applies renames only to exported bindings. An unused
+			// map key must not hide an actual unrenamed export with this name.
+			_, defined := i.lookup(s.Namespace, source)
+			if defined || i.hasEmittedBinding(s.Namespace, source, true) {
+				return ReferBinding{s.Namespace, source, true}, true
+			}
+		}
+	}
+	if _, renamed := s.Renames[local]; renamed {
+		return ReferBinding{}, false
+	}
+	return ReferBinding{s.Namespace, local, false}, true
 }
 
 type WorkspaceIndex struct {
@@ -327,9 +357,13 @@ func (i *WorkspaceIndex) CompletionCandidates(currentNS, prefix string) []string
 		for name := range nsInfo.Refers {
 			add(name)
 		}
-		for _, ns := range nsInfo.ReferAll {
-			for name := range i.ByNamespace[ns] {
-				add(name)
+		for _, spec := range nsInfo.ReferAll {
+			for name := range i.ByNamespace[spec.Namespace] {
+				if alias, renamed := spec.Renames[name]; renamed {
+					add(alias)
+				} else {
+					add(name)
+				}
 			}
 		}
 	}
@@ -383,9 +417,16 @@ func (i *WorkspaceIndex) qualifiedCompletionCandidates(currentNS, nsPrefix, name
 }
 
 func (i *WorkspaceIndex) ResolveDefinition(currentNS, symbol string) (SymbolDef, bool) {
+	def, _, ok := i.ResolveDefinitionWithBinding(currentNS, symbol)
+	return def, ok
+}
+
+// ResolveDefinitionWithBinding also reports import provenance for unqualified
+// references. An explicit :rename fixes the local spelling during source rename.
+func (i *WorkspaceIndex) ResolveDefinitionWithBinding(currentNS, symbol string) (SymbolDef, ReferBinding, bool) {
 	symbol = strings.TrimSpace(symbol)
 	if symbol == "" {
-		return SymbolDef{}, false
+		return SymbolDef{}, ReferBinding{}, false
 	}
 
 	nsInfo := i.NamespaceInfo(currentNS)
@@ -397,37 +438,40 @@ func (i *WorkspaceIndex) ResolveDefinition(currentNS, symbol string) (SymbolDef,
 				nsPart = resolvedNS
 			}
 		}
-		return i.lookup(nsPart, name)
+		def, ok := i.lookup(nsPart, name)
+		return def, ReferBinding{}, ok
 	}
 
 	if def, ok := i.lookup(currentNS, symbol); ok {
-		return def, true
+		return def, ReferBinding{}, true
 	}
 
 	if nsInfo != nil {
-		if refNS, ok := nsInfo.Refers[symbol]; ok {
-			if def, ok := i.lookup(refNS, symbol); ok {
-				return def, true
+		if binding, ok := nsInfo.Refers[symbol]; ok {
+			if def, ok := i.lookup(binding.Namespace, binding.SourceName); ok {
+				return def, binding, true
 			}
 		}
-		for _, refAllNS := range nsInfo.ReferAll {
-			if def, ok := i.lookup(refAllNS, symbol); ok {
-				return def, true
+		for _, spec := range nsInfo.ReferAll {
+			if binding, ok := i.referAllBindingForLocal(spec, symbol); ok {
+				if def, ok := i.lookup(binding.Namespace, binding.SourceName); ok {
+					return def, binding, true
+				}
 			}
 		}
 		if _, excluded := nsInfo.Exclude[symbol]; excluded {
-			return SymbolDef{}, false
+			return SymbolDef{}, ReferBinding{}, false
 		}
 	}
 
 	if def, ok := i.lookup(compiler.CoreNamespace, symbol); ok {
-		return def, true
+		return def, ReferBinding{}, true
 	}
 	if def, ok := i.lookup(compiler.StdlibCoreNamespace, symbol); ok {
-		return def, true
+		return def, ReferBinding{}, true
 	}
 
-	return SymbolDef{}, false
+	return SymbolDef{}, ReferBinding{}, false
 }
 
 // HasGlobalBinding also sees globals emitted by core declaration forms, which
@@ -450,11 +494,11 @@ func (i *WorkspaceIndex) HasGlobalBinding(currentNS, symbol string) bool {
 		return true
 	}
 	if info != nil {
-		if ns, found := info.Refers[symbol]; found && i.hasEmittedBinding(ns, symbol, true) {
+		if binding, found := info.Refers[symbol]; found && i.hasEmittedBinding(binding.Namespace, binding.SourceName, true) {
 			return true
 		}
-		for _, ns := range info.ReferAll {
-			if i.hasEmittedBinding(ns, symbol, true) {
+		for _, spec := range info.ReferAll {
+			if binding, ok := i.referAllBindingForLocal(spec, symbol); ok && i.hasEmittedBinding(binding.Namespace, binding.SourceName, true) {
 				return true
 			}
 		}
@@ -859,8 +903,8 @@ func (i *WorkspaceIndex) getOrCreateNamespace(ns string) *NamespaceInfo {
 	info = &NamespaceInfo{
 		Name:     ns,
 		Aliases:  make(map[string]string),
-		Refers:   make(map[string]string),
-		ReferAll: []string{},
+		Refers:   make(map[string]ReferBinding),
+		ReferAll: []ReferAllSpec{},
 		Exclude:  make(map[string]struct{}),
 	}
 	i.Namespaces[ns] = info
@@ -877,10 +921,8 @@ func mergeNamespaceInfo(dst, src *NamespaceInfo) {
 	for name, ns := range src.Refers {
 		dst.Refers[name] = ns
 	}
-	for _, ns := range src.ReferAll {
-		if !containsString(dst.ReferAll, ns) {
-			dst.ReferAll = append(dst.ReferAll, ns)
-		}
+	for _, spec := range src.ReferAll {
+		dst.ReferAll = append(dst.ReferAll, cloneReferAllSpec(spec))
 	}
 	for name := range src.Exclude {
 		dst.Exclude[name] = struct{}{}
@@ -895,8 +937,8 @@ func cloneNamespaceInfo(src *NamespaceInfo) *NamespaceInfo {
 		Name:     src.Name,
 		URI:      src.URI,
 		Aliases:  make(map[string]string, len(src.Aliases)),
-		Refers:   make(map[string]string, len(src.Refers)),
-		ReferAll: make([]string, 0, len(src.ReferAll)),
+		Refers:   make(map[string]ReferBinding, len(src.Refers)),
+		ReferAll: make([]ReferAllSpec, 0, len(src.ReferAll)),
 		Exclude:  make(map[string]struct{}, len(src.Exclude)),
 	}
 	for alias, ns := range src.Aliases {
@@ -905,9 +947,19 @@ func cloneNamespaceInfo(src *NamespaceInfo) *NamespaceInfo {
 	for name, ns := range src.Refers {
 		out.Refers[name] = ns
 	}
-	out.ReferAll = append(out.ReferAll, src.ReferAll...)
+	for _, spec := range src.ReferAll {
+		out.ReferAll = append(out.ReferAll, cloneReferAllSpec(spec))
+	}
 	for name := range src.Exclude {
 		out.Exclude[name] = struct{}{}
+	}
+	return out
+}
+
+func cloneReferAllSpec(src ReferAllSpec) ReferAllSpec {
+	out := ReferAllSpec{Namespace: src.Namespace, Renames: make(map[string]string, len(src.Renames))}
+	for source, local := range src.Renames {
+		out.Renames[source] = local
 	}
 	return out
 }
@@ -999,8 +1051,8 @@ func parseNamespaceDecl(list *coll.List) (string, *NamespaceInfo) {
 	info := &NamespaceInfo{
 		Name:     nsName,
 		Aliases:  make(map[string]string),
-		Refers:   make(map[string]string),
-		ReferAll: []string{},
+		Refers:   make(map[string]ReferBinding),
+		ReferAll: []ReferAllSpec{},
 		Exclude:  make(map[string]struct{}),
 	}
 
@@ -1045,7 +1097,7 @@ func parseRequireClause(info *NamespaceInfo, clause *coll.List) {
 }
 
 func parseRequireSpec(info *NamespaceInfo, spec types.Value) {
-	if _, ok := symbolFromValue(spec); ok {
+	if _, ok := namespaceNameFromValue(spec); ok {
 		return
 	}
 
@@ -1053,11 +1105,13 @@ func parseRequireSpec(info *NamespaceInfo, spec types.Value) {
 	if !ok || len(vec.Items) == 0 {
 		return
 	}
-	targetNS, ok := symbolFromValue(vec.Items[0])
+	targetNS, ok := namespaceNameFromValue(vec.Items[0])
 	if !ok || targetNS == "" {
 		return
 	}
 
+	var refer types.Value
+	renames := make(map[string]string)
 	for i := 1; i < len(vec.Items); i++ {
 		kw, ok := vec.Items[i].(atom.Keyword)
 		if !ok {
@@ -1077,17 +1131,30 @@ func parseRequireSpec(info *NamespaceInfo, spec types.Value) {
 			if i+1 >= len(vec.Items) {
 				continue
 			}
-			parseReferOption(info, targetNS, vec.Items[i+1])
+			refer = vec.Items[i+1]
+			i++
+		case "rename":
+			if i+1 >= len(vec.Items) {
+				continue
+			}
+			if m, ok := vec.Items[i+1].(*coll.Map); ok {
+				for _, entry := range m.AllEntries() {
+					source, sourceOK := symbolFromValue(entry.Key)
+					local, localOK := symbolFromValue(entry.Value)
+					if sourceOK && localOK && source != "" && local != "" {
+						renames[source] = local
+					}
+				}
+			}
 			i++
 		}
 	}
+	parseReferOption(info, targetNS, refer, renames)
 }
 
-func parseReferOption(info *NamespaceInfo, targetNS string, v types.Value) {
+func parseReferOption(info *NamespaceInfo, targetNS string, v types.Value, renames map[string]string) {
 	if kw, ok := v.(atom.Keyword); ok && string(kw) == "all" {
-		if !containsString(info.ReferAll, targetNS) {
-			info.ReferAll = append(info.ReferAll, targetNS)
-		}
+		info.ReferAll = append(info.ReferAll, ReferAllSpec{Namespace: targetNS, Renames: renames})
 		return
 	}
 	vec, ok := v.(*coll.Vector)
@@ -1099,8 +1166,21 @@ func parseReferOption(info *NamespaceInfo, targetNS string, v types.Value) {
 		if !ok || name == "" {
 			continue
 		}
-		info.Refers[name] = targetNS
+		local, renamed := renames[name]
+		if !renamed {
+			local = name
+		}
+		info.Refers[local] = ReferBinding{Namespace: targetNS, SourceName: name, ExplicitRename: renamed}
 	}
+}
+
+// Namespace operands alone accept keywords; aliases and import names remain
+// symbols, as required by the runtime require parser.
+func namespaceNameFromValue(v types.Value) (string, bool) {
+	if kw, ok := v.(atom.Keyword); ok {
+		return string(kw), true
+	}
+	return symbolFromValue(v)
 }
 
 func parseReferClojureClause(info *NamespaceInfo, clause *coll.List) {

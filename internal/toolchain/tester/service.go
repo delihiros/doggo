@@ -238,7 +238,7 @@ func collectDogFiles(paths []string, excludes map[string]struct{}, matchFile fun
 				return err
 			}
 			if d.IsDir() {
-				if shouldSkipDir(path, d.Name(), excludes) {
+				if path != abs && shouldSkipDir(path, d.Name(), excludes) {
 					return filepath.SkipDir
 				}
 				return nil
