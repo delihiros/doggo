@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"context"
 	"fmt"
 	"iter"
 	"math"
@@ -70,7 +71,13 @@ func (e *ShrinkError) ExceptionData() *doggoerr.ExceptionData {
 }
 
 func Shrink(schema *Schema, value types.Value) (iter.Seq[types.Value], error) {
-	candidates, err := shrinkValue(schema, value, nil)
+	return ShrinkWithContext(context.Background(), schema, value)
+}
+
+// ShrinkWithContext retains the caller context throughout recursive shrinking
+// and validation of the input, branches, and candidates.
+func ShrinkWithContext(ctx context.Context, schema *Schema, value types.Value) (iter.Seq[types.Value], error) {
+	candidates, err := shrinkValue(ctx, schema, value, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -84,6 +91,11 @@ func Shrink(schema *Schema, value types.Value) (iter.Seq[types.Value], error) {
 }
 
 func ShrinkSeq(schema *Schema, value types.Value, n int) ([]types.Value, error) {
+	return ShrinkSeqWithContext(context.Background(), schema, value, n)
+}
+
+// ShrinkSeqWithContext retains the caller context while collecting candidates.
+func ShrinkSeqWithContext(ctx context.Context, schema *Schema, value types.Value, n int) ([]types.Value, error) {
 	if n < 0 {
 		return nil, &ShrinkError{
 			Schema:  schema,
@@ -97,7 +109,7 @@ func ShrinkSeq(schema *Schema, value types.Value, n int) ([]types.Value, error) 
 		return []types.Value{}, nil
 	}
 
-	stream, err := Shrink(schema, value)
+	stream, err := ShrinkWithContext(ctx, schema, value)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +124,7 @@ func ShrinkSeq(schema *Schema, value types.Value, n int) ([]types.Value, error) 
 	return candidates, nil
 }
 
-func shrinkValue(schema *Schema, value types.Value, path Path) ([]types.Value, error) {
+func shrinkValue(ctx context.Context, schema *Schema, value types.Value, path Path) ([]types.Value, error) {
 	if schema == nil {
 		return nil, &ShrinkError{
 			Path:    path,
@@ -121,7 +133,7 @@ func shrinkValue(schema *Schema, value types.Value, path Path) ([]types.Value, e
 			Message: "schema cannot be nil",
 		}
 	}
-	if !Validate(schema, value) {
+	if !ValidateWithContext(ctx, schema, value) {
 		return nil, &ShrinkError{
 			Path:    path,
 			Schema:  schema,
@@ -153,21 +165,21 @@ func shrinkValue(schema *Schema, value types.Value, path Path) ([]types.Value, e
 	case KindString:
 		return shrinkString(value), nil
 	case KindMaybe:
-		return shrinkMaybe(schema, value, path)
+		return shrinkMaybe(ctx, schema, value, path)
 	case KindVector:
-		return shrinkVector(schema, value, path)
+		return shrinkVector(ctx, schema, value, path)
 	case KindList:
-		return shrinkList(schema, value, path)
+		return shrinkList(ctx, schema, value, path)
 	case KindSet:
-		return shrinkSet(schema, value, path)
+		return shrinkSet(ctx, schema, value, path)
 	case KindTuple:
-		return shrinkTuple(schema, value, path)
+		return shrinkTuple(ctx, schema, value, path)
 	case KindMap:
-		return shrinkMap(schema, value, path)
+		return shrinkMap(ctx, schema, value, path)
 	case KindMapOf:
-		return shrinkMapOf(schema, value, path)
+		return shrinkMapOf(ctx, schema, value, path)
 	case KindOr:
-		return shrinkOr(schema, value, path)
+		return shrinkOr(ctx, schema, value, path)
 	case KindEnum:
 		return shrinkEnum(schema, value), nil
 	case KindPredicate, KindAnd:
@@ -265,12 +277,12 @@ func shrinkString(value types.Value) []types.Value {
 	return candidates
 }
 
-func shrinkMaybe(schema *Schema, value types.Value, path Path) ([]types.Value, error) {
+func shrinkMaybe(ctx context.Context, schema *Schema, value types.Value, path Path) ([]types.Value, error) {
 	if isNilValue(value) {
 		return []types.Value{}, nil
 	}
 	candidates := []types.Value{atom.NilValue}
-	childCandidates, err := shrinkValue(schema.element, value, path.Push(atom.NewKeyword("value")))
+	childCandidates, err := shrinkValue(ctx, schema.element, value, path.Push(atom.NewKeyword("value")))
 	if err != nil {
 		return nil, err
 	}
@@ -280,12 +292,12 @@ func shrinkMaybe(schema *Schema, value types.Value, path Path) ([]types.Value, e
 	return candidates, nil
 }
 
-func shrinkVector(schema *Schema, value types.Value, path Path) ([]types.Value, error) {
+func shrinkVector(ctx context.Context, schema *Schema, value types.Value, path Path) ([]types.Value, error) {
 	items, ok := vectorItems(value)
 	if !ok {
 		return []types.Value{}, nil
 	}
-	candidates, err := shrinkCollectionLike(schema, items, path, func(next []types.Value) types.Value {
+	candidates, err := shrinkCollectionLike(ctx, schema, items, path, func(next []types.Value) types.Value {
 		return coll.NewVector(next...)
 	})
 	if err != nil {
@@ -294,12 +306,12 @@ func shrinkVector(schema *Schema, value types.Value, path Path) ([]types.Value, 
 	return candidates, nil
 }
 
-func shrinkList(schema *Schema, value types.Value, path Path) ([]types.Value, error) {
+func shrinkList(ctx context.Context, schema *Schema, value types.Value, path Path) ([]types.Value, error) {
 	items, ok := listItems(value)
 	if !ok {
 		return []types.Value{}, nil
 	}
-	candidates, err := shrinkCollectionLike(schema, items, path, func(next []types.Value) types.Value {
+	candidates, err := shrinkCollectionLike(ctx, schema, items, path, func(next []types.Value) types.Value {
 		return coll.NewList(next...)
 	})
 	if err != nil {
@@ -308,7 +320,7 @@ func shrinkList(schema *Schema, value types.Value, path Path) ([]types.Value, er
 	return candidates, nil
 }
 
-func shrinkSet(schema *Schema, value types.Value, path Path) ([]types.Value, error) {
+func shrinkSet(ctx context.Context, schema *Schema, value types.Value, path Path) ([]types.Value, error) {
 	items, ok := setItems(value)
 	if !ok {
 		return []types.Value{}, nil
@@ -318,13 +330,13 @@ func shrinkSet(schema *Schema, value types.Value, path Path) ([]types.Value, err
 	for i := range items {
 		candidateItems := removeIndex(items, i)
 		candidate := coll.NewSet(candidateItems...)
-		if Validate(schema, candidate) {
+		if ValidateWithContext(ctx, schema, candidate) {
 			appendUniqueValue(&candidates, candidate)
 		}
 	}
 
 	for i, item := range items {
-		childCandidates, err := shrinkValue(schema.element, item, path.Push(indexValue(i)))
+		childCandidates, err := shrinkValue(ctx, schema.element, item, path.Push(indexValue(i)))
 		if err != nil {
 			return nil, err
 		}
@@ -334,7 +346,7 @@ func shrinkSet(schema *Schema, value types.Value, path Path) ([]types.Value, err
 			if candidate.Count() != len(next) {
 				continue
 			}
-			if Validate(schema, candidate) {
+			if ValidateWithContext(ctx, schema, candidate) {
 				appendUniqueValue(&candidates, candidate)
 			}
 		}
@@ -342,25 +354,25 @@ func shrinkSet(schema *Schema, value types.Value, path Path) ([]types.Value, err
 	return candidates, nil
 }
 
-func shrinkTuple(schema *Schema, value types.Value, path Path) ([]types.Value, error) {
+func shrinkTuple(ctx context.Context, schema *Schema, value types.Value, path Path) ([]types.Value, error) {
 	items, ok := seqLikeItems(value)
 	if !ok {
 		return []types.Value{}, nil
 	}
 	candidates := make([]types.Value, 0)
 	for i, item := range items {
-		childCandidates, err := shrinkValue(schema.items[i], item, path.Push(indexValue(i)))
+		childCandidates, err := shrinkValue(ctx, schema.items[i], item, path.Push(indexValue(i)))
 		if err != nil {
 			return nil, err
 		}
-		appendChildReplacementCandidates(&candidates, schema, childCandidates, func(child types.Value) types.Value {
+		appendChildReplacementCandidates(ctx, &candidates, schema, childCandidates, func(child types.Value) types.Value {
 			return coll.NewVector(replaceIndex(items, i, child)...)
 		})
 	}
 	return candidates, nil
 }
 
-func shrinkMap(schema *Schema, value types.Value, path Path) ([]types.Value, error) {
+func shrinkMap(ctx context.Context, schema *Schema, value types.Value, path Path) ([]types.Value, error) {
 	m, ok := value.(*coll.Map)
 	if !ok {
 		return []types.Value{}, nil
@@ -374,7 +386,7 @@ func shrinkMap(schema *Schema, value types.Value, path Path) ([]types.Value, err
 		}
 		if entry.Schema != nil && entry.Schema.kind == KindMaybe && !isNilValue(found.Value) {
 			candidate := m.Assoc(entry.Key, atom.NilValue).(*coll.Map)
-			if Validate(schema, candidate) {
+			if ValidateWithContext(ctx, schema, candidate) {
 				appendUniqueValue(&candidates, candidate)
 			}
 		}
@@ -385,13 +397,13 @@ func shrinkMap(schema *Schema, value types.Value, path Path) ([]types.Value, err
 		if found == nil {
 			continue
 		}
-		childCandidates, err := shrinkValue(entry.Schema, found.Value, path.Push(entry.Key))
+		childCandidates, err := shrinkValue(ctx, entry.Schema, found.Value, path.Push(entry.Key))
 		if err != nil {
 			return nil, err
 		}
 		for _, child := range childCandidates {
 			candidate := m.Assoc(entry.Key, child).(*coll.Map)
-			if Validate(schema, candidate) {
+			if ValidateWithContext(ctx, schema, candidate) {
 				appendUniqueValue(&candidates, candidate)
 			}
 		}
@@ -399,7 +411,7 @@ func shrinkMap(schema *Schema, value types.Value, path Path) ([]types.Value, err
 	return candidates, nil
 }
 
-func shrinkMapOf(schema *Schema, value types.Value, path Path) ([]types.Value, error) {
+func shrinkMapOf(ctx context.Context, schema *Schema, value types.Value, path Path) ([]types.Value, error) {
 	m, ok := value.(*coll.Map)
 	if !ok {
 		return []types.Value{}, nil
@@ -408,7 +420,7 @@ func shrinkMapOf(schema *Schema, value types.Value, path Path) ([]types.Value, e
 	candidates := make([]types.Value, 0)
 	for _, key := range m.Order {
 		candidate := m.Dissoc(key).(*coll.Map)
-		if Validate(schema, candidate) {
+		if ValidateWithContext(ctx, schema, candidate) {
 			appendUniqueValue(&candidates, candidate)
 		}
 	}
@@ -419,18 +431,18 @@ func shrinkMapOf(schema *Schema, value types.Value, path Path) ([]types.Value, e
 			continue
 		}
 
-		valueCandidates, err := shrinkValue(schema.valueSchema, found.Value, path.Push(key).Push(atom.NewKeyword("value")))
+		valueCandidates, err := shrinkValue(ctx, schema.valueSchema, found.Value, path.Push(key).Push(atom.NewKeyword("value")))
 		if err != nil {
 			return nil, err
 		}
 		for _, child := range boundedChildCandidates(valueCandidates) {
 			candidate := m.Assoc(key, child).(*coll.Map)
-			if Validate(schema, candidate) {
+			if ValidateWithContext(ctx, schema, candidate) {
 				appendUniqueValue(&candidates, candidate)
 			}
 		}
 
-		keyCandidates, err := shrinkValue(schema.keySchema, key, path.Push(key).Push(atom.NewKeyword("key")))
+		keyCandidates, err := shrinkValue(ctx, schema.keySchema, key, path.Push(key).Push(atom.NewKeyword("key")))
 		if err != nil {
 			return nil, err
 		}
@@ -439,7 +451,7 @@ func shrinkMapOf(schema *Schema, value types.Value, path Path) ([]types.Value, e
 				continue
 			}
 			candidate := m.Dissoc(key).Assoc(nextKey, found.Value).(*coll.Map)
-			if Validate(schema, candidate) {
+			if ValidateWithContext(ctx, schema, candidate) {
 				appendUniqueValue(&candidates, candidate)
 			}
 		}
@@ -447,12 +459,12 @@ func shrinkMapOf(schema *Schema, value types.Value, path Path) ([]types.Value, e
 	return candidates, nil
 }
 
-func shrinkOr(schema *Schema, value types.Value, path Path) ([]types.Value, error) {
+func shrinkOr(ctx context.Context, schema *Schema, value types.Value, path Path) ([]types.Value, error) {
 	for i, child := range schema.items {
-		if !Validate(child, value) {
+		if !ValidateWithContext(ctx, child, value) {
 			continue
 		}
-		return shrinkValue(child, value, path.Push(indexValue(i)))
+		return shrinkValue(ctx, child, value, path.Push(indexValue(i)))
 	}
 	return []types.Value{}, nil
 }
@@ -467,32 +479,32 @@ func shrinkEnum(schema *Schema, value types.Value) []types.Value {
 	return []types.Value{schema.enumValues[0]}
 }
 
-func shrinkCollectionLike(schema *Schema, items []types.Value, path Path, build func([]types.Value) types.Value) ([]types.Value, error) {
+func shrinkCollectionLike(ctx context.Context, schema *Schema, items []types.Value, path Path, build func([]types.Value) types.Value) ([]types.Value, error) {
 	candidates := make([]types.Value, 0)
 
 	for i := range items {
 		candidate := build(removeIndex(items, i))
-		if Validate(schema, candidate) {
+		if ValidateWithContext(ctx, schema, candidate) {
 			appendUniqueValue(&candidates, candidate)
 		}
 	}
 
 	for i, item := range items {
-		childCandidates, err := shrinkValue(schema.element, item, path.Push(indexValue(i)))
+		childCandidates, err := shrinkValue(ctx, schema.element, item, path.Push(indexValue(i)))
 		if err != nil {
 			return nil, err
 		}
-		appendChildReplacementCandidates(&candidates, schema, childCandidates, func(child types.Value) types.Value {
+		appendChildReplacementCandidates(ctx, &candidates, schema, childCandidates, func(child types.Value) types.Value {
 			return build(replaceIndex(items, i, child))
 		})
 	}
 	return candidates, nil
 }
 
-func appendChildReplacementCandidates(dst *[]types.Value, schema *Schema, childCandidates []types.Value, build func(types.Value) types.Value) {
+func appendChildReplacementCandidates(ctx context.Context, dst *[]types.Value, schema *Schema, childCandidates []types.Value, build func(types.Value) types.Value) {
 	for _, child := range boundedChildCandidates(childCandidates) {
 		candidate := build(child)
-		if Validate(schema, candidate) {
+		if ValidateWithContext(ctx, schema, candidate) {
 			appendUniqueValue(dst, candidate)
 		}
 	}

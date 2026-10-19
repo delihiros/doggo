@@ -288,7 +288,7 @@ func shrinkCounterexample(ctx context.Context, property types.Fn, schema *Schema
 	explored := 0
 
 	for explored < shrinkLimit {
-		stream, err := Shrink(schema, currentInput)
+		stream, err := ShrinkWithContext(ctx, schema, currentInput)
 		if err != nil {
 			var shrinkErr *ShrinkError
 			if ok := asShrinkUnsupported(err, &shrinkErr); ok {
