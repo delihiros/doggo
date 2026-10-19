@@ -16,7 +16,7 @@ Before contributing to the public repository, set a GitHub noreply identity in i
 git config --local user.email YOUR_NOREPLY_ADDRESS
 ```
 
-CI checks the raw author and committer identities of new push/PR commits, including merge commits. Both must use a GitHub noreply address; diagnostics identify the commit and role without repeating the email. Check account email choices when making commits through GitHub as well as local Git. To verify all history reachable from the current branch before publication, run:
+CI checks the raw author and committer identities of new push/PR commits, including merge commits. If a replaced branch's previous head is unavailable, it checks all reachable history instead. Both identities must use a GitHub noreply address; diagnostics identify the commit and role without repeating the email. Check account email choices when making commits through GitHub as well as local Git. To verify all history reachable from the current branch before publication, run:
 
 ```bash
 python .github/scripts/check_commit_identity.py

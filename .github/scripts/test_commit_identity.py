@@ -93,6 +93,17 @@ class CommitIdentityTests(unittest.TestCase):
         self.git("config", "log.showSignature", "true")
         self.assertEqual(self.checker.check_identities(self.repository), [])
 
+    def test_ci_checks_complete_history_when_previous_head_is_unavailable(self):
+        self.commit()
+        env = dict(os.environ, COMMIT_BASE="f" * 40)
+        command = [os.sys.executable, str(SCRIPT), "--repository", str(self.repository), "--ci"]
+        clean = subprocess.run(command, env=env, capture_output=True, text=True)
+        self.assertEqual(clean.returncode, 0, clean.stderr)
+        self.commit(author="private@example.invalid")
+        private = subprocess.run(command, env=env, capture_output=True, text=True)
+        self.assertEqual(private.returncode, 1)
+        self.assertNotIn("private@example.invalid", private.stdout + private.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
