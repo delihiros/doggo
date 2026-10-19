@@ -497,13 +497,23 @@ type formattingParams struct {
 }
 
 type symbolOccurrence struct {
-	URI         string
-	Literal     string
-	Range       lspRange
-	namespace   string
-	locals      map[string]struct{}
-	declaration bool
+	URI          string
+	Literal      string
+	Range        lspRange
+	namespace    string
+	locals       map[string]struct{}
+	declaration  bool
+	renamePolicy occurrenceRenamePolicy
+	renameKeys   map[string]struct{}
 }
+
+type occurrenceRenamePolicy uint8
+
+const (
+	renameNormal     occurrenceRenamePolicy = iota
+	renameSourceOnly                        // import source spelling changes, its local alias stays fixed
+	renamePreserve                          // evaluated use of a fixed local alias
+)
 
 type semanticTokensParams struct {
 	TextDocument textDocumentIdentifier `json:"textDocument"`
@@ -683,7 +693,7 @@ func (s *Server) handleRename(msg message) error {
 	selectedOccurrence := false
 	selectedURI := toolindex.NormalizeURI(params.TextDocument.URI)
 	for _, occ := range occurrences {
-		if toolindex.NormalizeURI(occ.URI) == selectedURI && occ.Range == selectedRange {
+		if occ.renamePolicy != renameSourceOnly && toolindex.NormalizeURI(occ.URI) == selectedURI && occ.Range == selectedRange {
 			selectedOccurrence = true
 			break
 		}
@@ -699,7 +709,10 @@ func (s *Server) handleRename(msg message) error {
 			return s.respondError(msg.ID, lspErrorInvalidParams, "rename destination already resolves to a global symbol")
 		}
 		for _, occ := range occurrences {
-			if strings.Contains(occ.Literal, "/") || occ.declaration {
+			if _, duplicate := occ.renameKeys[newName]; duplicate {
+				return s.respondError(msg.ID, lspErrorInvalidParams, "rename destination would duplicate a require rename key")
+			}
+			if occ.renamePolicy != renameNormal || strings.Contains(occ.Literal, "/") || occ.declaration {
 				continue
 			}
 			if _, captured := occ.locals[newName]; captured {
@@ -714,6 +727,9 @@ func (s *Server) handleRename(msg message) error {
 	for _, occ := range occurrences {
 		if s.state.index.IsGenerationDocument(occ.URI) {
 			return s.respondError(msg.ID, lspErrorInvalidParams, "cannot rename symbol referenced by immutable generation dependency")
+		}
+		if occ.renamePolicy == renamePreserve {
+			continue
 		}
 		replacement := renameReplacement(occ.Literal, def.Name, newName)
 		changes[occ.URI] = append(changes[occ.URI], map[string]any{
@@ -1556,13 +1572,13 @@ func namespaceDependsOn(info *toolindex.NamespaceInfo, targetNS string) bool {
 			return true
 		}
 	}
-	for _, ns := range info.Refers {
-		if ns == targetNS {
+	for _, binding := range info.Refers {
+		if binding.Namespace == targetNS {
 			return true
 		}
 	}
-	for _, ns := range info.ReferAll {
-		if ns == targetNS {
+	for _, spec := range info.ReferAll {
+		if spec.Namespace == targetNS {
 			return true
 		}
 	}
@@ -2328,17 +2344,40 @@ func (c *occurrenceCollector) parseNamespaceRequireSpec(scope *occurrenceScope) 
 		return
 	}
 	c.next() // [
-	namespace := c.next()
+	namespace, namespaceOK := c.readRequireOperand(true)
+	var refers []lexer.Token
+	var renameSources []lexer.Token
+	renames := make(map[string]string)
+	renameKeys := make(map[string]struct{})
 	for !c.done() && c.peek().Type != lexer.RBRACKET {
 		option := c.next()
 		c.consumeMetadataPrefixes()
-		if option.Type == lexer.KEYWORD && option.Literal == "refer" &&
-			namespace.Type == lexer.IDENT && namespace.Literal == c.target.Namespace && c.peek().Type == lexer.LBRACKET {
-			c.next() // explicit :refer names identify globals from this namespace
+		if option.Type == lexer.KEYWORD && option.Literal == "refer" && c.peek().Type == lexer.LBRACKET {
+			c.next()
+			refers = nil
 			for !c.done() && c.peek().Type != lexer.RBRACKET {
-				c.parseForm(scope, false)
+				if tok, ok := c.readRequireOperand(false); ok {
+					refers = append(refers, tok)
+				}
 			}
 			if c.peek().Type == lexer.RBRACKET {
+				c.next()
+			}
+		} else if option.Type == lexer.KEYWORD && option.Literal == "rename" && c.peek().Type == lexer.LBRACE {
+			c.next()
+			for !c.done() && c.peek().Type != lexer.RBRACE {
+				source, sourceOK := c.readRequireOperand(false)
+				if c.peek().Type == lexer.RBRACE {
+					break
+				}
+				local, localOK := c.readRequireOperand(false)
+				if sourceOK && localOK {
+					renames[source.Literal] = local.Literal
+					renameKeys[source.Literal] = struct{}{}
+					renameSources = append(renameSources, source)
+				}
+			}
+			if c.peek().Type == lexer.RBRACE {
 				c.next()
 			}
 		} else {
@@ -2348,6 +2387,54 @@ func (c *occurrenceCollector) parseNamespaceRequireSpec(scope *occurrenceScope) 
 	if c.peek().Type == lexer.RBRACKET {
 		c.next()
 	}
+	if !namespaceOK || namespace.Literal != c.target.Namespace {
+		return
+	}
+	// Import operands identify source exports directly. They are literal data,
+	// so neither lexical bindings nor the importer's aliases resolve them.
+	for _, tok := range refers {
+		if tok.Literal != c.target.Name {
+			continue
+		}
+		policy := renameNormal
+		if _, renamed := renames[tok.Literal]; renamed {
+			policy = renameSourceOnly
+		}
+		c.appendOccurrence(tok, nil, false, policy, nil)
+	}
+	for _, tok := range renameSources {
+		if tok.Literal == c.target.Name {
+			c.appendOccurrence(tok, nil, false, renameSourceOnly, renameKeys)
+		}
+	}
+}
+
+// Decode only an import operand, preserving its actual symbol token range.
+// Keywords are accepted exclusively for the namespace position.
+func (c *occurrenceCollector) readRequireOperand(namespace bool) (lexer.Token, bool) {
+	c.consumeMetadataPrefixes()
+	if c.peek().Type == lexer.QUOTE {
+		c.next()
+		return c.readRequireOperand(false)
+	}
+	if c.peek().Type == lexer.LPAREN && c.pos+1 < len(c.tokens) && c.tokens[c.pos+1].Type == lexer.IDENT && c.tokens[c.pos+1].Literal == "quote" {
+		c.next()
+		c.next()
+		tok, ok := c.readRequireOperand(false)
+		if c.peek().Type == lexer.RPAREN {
+			c.next()
+			return tok, ok
+		}
+		c.parseUntil(newOccurrenceScope(nil), true, lexer.RPAREN)
+		return lexer.Token{}, false
+	}
+	tok := c.peek()
+	if tok.Type == lexer.IDENT || namespace && tok.Type == lexer.KEYWORD {
+		c.next()
+		return tok, true
+	}
+	c.pos = c.skipOneFormFrom(c.pos)
+	return lexer.Token{}, false
 }
 
 func (c *occurrenceCollector) parseDefLike(scope *occurrenceScope, quoted bool) {
@@ -2473,17 +2560,14 @@ func (c *occurrenceCollector) parseFnLike(scope *occurrenceScope, quoted bool) {
 
 // Defmethod compiles its tail as an fn, with the same optional name and arities.
 func (c *occurrenceCollector) parseFnTail(scope *occurrenceScope, quoted bool) {
-	fnName := ""
 	c.consumeMetadataPrefixes()
 	if c.peek().Type == lexer.IDENT {
-		nameTok := c.next()
-		fnName = nameTok.Literal
+		c.next() // optional fn label is compiler metadata, not a lexical binding
 	}
 	c.consumeMetadataPrefixes()
 
 	if c.peek().Type == lexer.LBRACKET {
 		fnScope := newOccurrenceScope(scope)
-		fnScope.define(fnName)
 		c.parseParamVector(fnScope)
 		c.parseUntil(fnScope, quoted, lexer.RPAREN)
 		return
@@ -2493,7 +2577,6 @@ func (c *occurrenceCollector) parseFnTail(scope *occurrenceScope, quoted bool) {
 		for !c.done() && c.peek().Type == lexer.LPAREN {
 			c.next()
 			fnScope := newOccurrenceScope(scope)
-			fnScope.define(fnName)
 			c.consumeMetadataPrefixes()
 			if c.peek().Type == lexer.LBRACKET {
 				c.parseParamVector(fnScope)
@@ -2846,7 +2929,7 @@ func (c *occurrenceCollector) handleIdentifier(tok lexer.Token, scope *occurrenc
 		return
 	}
 	currentNS := c.idx.NamespaceAtPosition(c.uri, toolindex.PositionFromOffset(c.source, tok.Offset))
-	def, ok := c.idx.ResolveDefinition(currentNS, literal)
+	def, binding, ok := c.idx.ResolveDefinitionWithBinding(currentNS, literal)
 	if !ok {
 		return
 	}
@@ -2856,7 +2939,16 @@ func (c *occurrenceCollector) handleIdentifier(tok lexer.Token, scope *occurrenc
 	if isDeclaration && !c.includeDeclaration {
 		return
 	}
+	policy := renameNormal
+	if !isDeclaration && binding.ExplicitRename {
+		policy = renamePreserve
+	}
+	c.appendOccurrence(tok, scope, isDeclaration, policy, nil)
+}
 
+func (c *occurrenceCollector) appendOccurrence(tok lexer.Token, scope *occurrenceScope, isDeclaration bool, policy occurrenceRenamePolicy, renameKeys map[string]struct{}) {
+	literal := tok.Literal
+	currentNS := c.idx.NamespaceAtPosition(c.uri, toolindex.PositionFromOffset(c.source, tok.Offset))
 	start := byteOffsetToLSPPosition(c.source, tok.Offset)
 	end := byteOffsetToLSPPosition(c.source, tok.EndOffset)
 	key := fmt.Sprintf("%s:%d:%d:%s", c.uri, tok.Line, tok.Column, literal)
@@ -2873,11 +2965,13 @@ func (c *occurrenceCollector) handleIdentifier(tok lexer.Token, scope *occurrenc
 		}
 	}
 	c.occurrences = append(c.occurrences, symbolOccurrence{
-		URI:         c.uri,
-		Literal:     literal,
-		namespace:   currentNS,
-		locals:      locals,
-		declaration: isDeclaration,
+		URI:          c.uri,
+		Literal:      literal,
+		namespace:    currentNS,
+		locals:       locals,
+		declaration:  isDeclaration,
+		renamePolicy: policy,
+		renameKeys:   renameKeys,
 		Range: lspRange{
 			Start: start,
 			End:   end,
@@ -2927,13 +3021,18 @@ func (s *Server) referenceCandidatesForURI(uri string, def toolindex.SymbolDef) 
 		if info == nil {
 			continue
 		}
-		if targetNS, ok := info.Refers[def.Name]; ok && targetNS == def.Namespace {
-			out[def.Name] = struct{}{}
+		for local, binding := range info.Refers {
+			if binding.Namespace == def.Namespace && binding.SourceName == def.Name {
+				out[local] = struct{}{}
+			}
 		}
-		for _, ns := range info.ReferAll {
-			if ns == def.Namespace {
-				out[def.Name] = struct{}{}
-				break
+		for _, spec := range info.ReferAll {
+			if spec.Namespace == def.Namespace {
+				local := def.Name
+				if alias, renamed := spec.Renames[def.Name]; renamed {
+					local = alias
+				}
+				out[local] = struct{}{}
 			}
 		}
 		for alias, targetNS := range info.Aliases {
