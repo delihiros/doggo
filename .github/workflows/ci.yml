@@ -32,9 +32,9 @@ jobs:
           cache: true
       - name: Stress Unix process-tree cancellation
         if: runner.os != 'Windows'
-        run: |
-          go test -count=10 -run '^TestProcessKillTree' ./internal/vm
-          go test -count=10 -run '^TestApp_Run_TestCommand_DefaultInvocationUsesHostStdlibRuntime$' ./internal/cli
+        run: go test -count=10 -run '^TestProcessKillTree' ./internal/vm
+      - name: Stress process namespace integration
+        run: go test -count=3 -run '^TestApp_Run_TestCommand_DefaultInvocationUsesHostStdlibRuntime$' ./internal/cli
       - name: Validate GitHub Actions workflows
         if: runner.os == 'Linux'
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
