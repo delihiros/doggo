@@ -10,7 +10,9 @@ import (
 )
 
 const (
-	jsonRPCVersion = "2.0"
+	jsonRPCVersion     = "2.0"
+	maxLSPHeaderBytes  = 8 * 1024
+	maxLSPMessageBytes = 16 * 1024 * 1024
 )
 
 type message struct {
@@ -29,25 +31,33 @@ type responseError struct {
 
 func readMessage(r *bufio.Reader) ([]byte, error) {
 	contentLength := -1
+	headerBytes := 0
 	for {
-		line, err := r.ReadString('\n')
+		lineBytes, err := readHeaderLine(r, maxLSPHeaderBytes-headerBytes)
 		if err != nil {
+			if err == io.EOF && headerBytes > 0 {
+				return nil, io.ErrUnexpectedEOF
+			}
 			return nil, err
 		}
-		line = strings.TrimRight(line, "\r\n")
+		headerBytes += len(lineBytes)
+		line := strings.TrimRight(string(lineBytes), "\r\n")
 		if line == "" {
 			break
 		}
 		parts := strings.SplitN(line, ":", 2)
 		if len(parts) != 2 {
-			continue
+			return nil, fmt.Errorf("invalid LSP header")
 		}
 		key := strings.TrimSpace(parts[0])
 		value := strings.TrimSpace(parts[1])
 		if strings.EqualFold(key, "Content-Length") {
+			if contentLength >= 0 {
+				return nil, fmt.Errorf("duplicate Content-Length header")
+			}
 			n, err := strconv.Atoi(value)
-			if err != nil {
-				return nil, fmt.Errorf("invalid Content-Length: %w", err)
+			if err != nil || n < 0 || n > maxLSPMessageBytes {
+				return nil, fmt.Errorf("Content-Length must be between 0 and %d bytes", maxLSPMessageBytes)
 			}
 			contentLength = n
 		}
@@ -59,9 +69,32 @@ func readMessage(r *bufio.Reader) ([]byte, error) {
 
 	payload := make([]byte, contentLength)
 	if _, err := io.ReadFull(r, payload); err != nil {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
 		return nil, err
 	}
 	return payload, nil
+}
+
+// Bound header storage even when a peer never sends a newline. ReadSlice may
+// fragment a valid line when the caller supplies a small buffered reader.
+func readHeaderLine(r *bufio.Reader, remaining int) ([]byte, error) {
+	var line []byte
+	for {
+		fragment, err := r.ReadSlice('\n')
+		if len(fragment) > remaining-len(line) {
+			return nil, fmt.Errorf("LSP headers exceed %d bytes", maxLSPHeaderBytes)
+		}
+		line = append(line, fragment...)
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if err == io.EOF && len(line) > 0 {
+			return nil, io.ErrUnexpectedEOF
+		}
+		return line, err
+	}
 }
 
 func writeMessage(w *bufio.Writer, msg any) error {

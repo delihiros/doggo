@@ -6,7 +6,7 @@ Run the generator after dependency or toolchain changes. License files below are
 copied verbatim from installed source packages; no registry provenance is inferred.
 
 ========================================================================
-Component: Go runtime go1.26.9
+Component: Go runtime go1.26.10
 Targets: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64, windows/amd64
 
 --- LICENSE ---
