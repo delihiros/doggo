@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -66,5 +67,41 @@ func openGenerationBinary(generation *os.Root, name string) (file *os.File, retE
 }
 
 func generationBinaryCommand(binary *generationBinary, args ...string) (*exec.Cmd, error) {
-	return exec.Command(binary.launchPath, args...), nil
+	command := exec.Command(filepath.Join(binary.executable.Path(), GenerationBinaryName()), args...)
+	command.Args[0] = binary.launchPath
+	return command, nil
+}
+
+// Windows retains an immutable private executable. Keeping a deny-write handle
+// on the published file would prevent SyncPublished from flushing a reused
+// generation, even though no content is changed. Never weaken the executable's
+// share mode or execute an unverified pathname to work around that conflict.
+func prepareGenerationBinary(binary *generationBinary) error {
+	snapshot, err := snapshotGenerationBinary(binary)
+	if err != nil {
+		return err
+	}
+	executable, err := NewOwnedTempRoot(".doggo-exec-")
+	if err != nil {
+		return err
+	}
+	name := GenerationBinaryName()
+	if err := executable.Tree().WriteOwnedFile(name, snapshot.Content, binary.info.Mode().Perm()); err != nil {
+		return errors.Join(fmt.Errorf("materialize generation binary: %w", err), executable.Close())
+	}
+	file, err := openGenerationBinary(executable.root, name)
+	if err != nil {
+		return errors.Join(err, executable.Close())
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return errors.Join(err, file.Close(), executable.Close())
+	}
+	if err := binary.file.Close(); err != nil {
+		return errors.Join(err, file.Close(), executable.Close())
+	}
+	binary.file, binary.info, binary.executable = file, info, executable
+	// Verify the retained copy through its final deny-write descriptor as well.
+	_, err = snapshotGenerationBinary(binary)
+	return err
 }

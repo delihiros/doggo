@@ -132,7 +132,13 @@ LSP が受信できるメッセージは本文 16 MiB、ヘッダー全体 8 KiB
 
 `doggo build` で現在の generation を用意した後、LSP は標準入出力で接続を待ちます。通常はエディターから起動します。
 
-`doggo exec` は実行中の generation に read lease を保持します。`build`、`mod init/sync`、`deps add/remove/update` を `exec --` 経由で実行すると、書き込み lease を待ち続けることを防ぐため即座にエラーになります。これらは `doggo mod sync` のように直接実行してください。
+`doggo exec`、REPL、LSP は選択した不変の generation を終了まで保持します。初期化時だけ公開用の read lease を取り、その後は世代ごとの pin に切り替えるため、LSP の起動中も通常の `doggo build` や `doggo mod sync` を実行できます。既存のセッションは古い依存関係を使い続けます。更新後の依存関係をエディターへ反映するには Language Server を再起動してください。公開済みの旧世代は通常の更新では削除しません。未確定世代の後片付けも、その世代を使用中のセッションが終了するまで待ちます。
+
+`build`、`mod init/sync`、`deps add/remove/update` は `exec --` を経由せず、`doggo mod sync` のように直接実行してください。
+
+Windows では、検証済みの実行ファイルをセッション専用の一時ディレクトリに保持します。このコピーも書き換え・置換を防ぐハンドルで保護し、正常終了時に削除します。同じ公開済み世代の再利用・耐久化は妨げません。
+
+この変更より前のランタイムで動作中の LSP や REPL は、引き続き公開用の read lease を保持します。初回の更新時はそれらを終了し、新しい CLI で `doggo build` してから再起動してください。
 
 このリポジトリには [VS Code 拡張](../editors/vscode/README.md) があります。`.dog` ファイルを開くと、拡張は `PATH` 上の `doggo` で `doggo exec -- lsp` を起動します。
 

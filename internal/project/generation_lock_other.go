@@ -15,6 +15,10 @@ func lockGenerationFile(_ *os.File, _ bool) error {
 	return fmt.Errorf("generation leases are unsupported on this platform")
 }
 
+func openGenerationPinFile(_ *os.File, _ string) (*os.File, error) {
+	return nil, fmt.Errorf("generation leases are unsupported on this platform")
+}
+
 func unlockGenerationFile(_ *os.File) error {
 	return fmt.Errorf("generation leases are unsupported on this platform")
 }

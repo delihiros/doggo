@@ -10,6 +10,14 @@ import (
 )
 
 func openGenerationLockFile(parent *os.File, name string, create bool) (*os.File, error) {
+	return openGenerationLeaseFile(parent, name, create, windows.FILE_GENERIC_READ|windows.FILE_GENERIC_WRITE|windows.SYNCHRONIZE, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE)
+}
+
+func openGenerationPinFile(parent *os.File, name string) (*os.File, error) {
+	return openGenerationLeaseFile(parent, name, false, windows.FILE_GENERIC_READ|windows.SYNCHRONIZE, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE)
+}
+
+func openGenerationLeaseFile(parent *os.File, name string, create bool, access, share uint32) (*os.File, error) {
 	objectName, err := windows.NewNTUnicodeString(name)
 	if err != nil {
 		return nil, err
@@ -28,12 +36,12 @@ func openGenerationLockFile(parent *os.File, name string, create bool) (*os.File
 	}
 	err = windows.NtCreateFile(
 		&handle,
-		windows.FILE_GENERIC_READ|windows.FILE_GENERIC_WRITE|windows.SYNCHRONIZE,
+		access,
 		&attributes,
 		&status,
 		nil,
 		windows.FILE_ATTRIBUTE_NORMAL,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		share,
 		disposition,
 		windows.FILE_NON_DIRECTORY_FILE|windows.FILE_SYNCHRONOUS_IO_NONALERT|windows.FILE_OPEN_REPARSE_POINT,
 		0,

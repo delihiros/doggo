@@ -22,7 +22,7 @@ func TestGenerationSessionRunsRetainedBinaryWindows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, _, _ := writeValidGenerationBinary(t, binary)
+	root, _, lock := writeValidGenerationBinary(t, binary)
 	session, err := OpenGenerationSession(filepath.Join(root, "main.dog"))
 	if err != nil {
 		t.Fatal(err)
@@ -33,6 +33,15 @@ func TestGenerationSessionRunsRetainedBinaryWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 	command.Env = append(os.Environ(), generationBinaryWindowsHelperEnv+"=1")
+	// Even a later modification of the published pathname must not affect the
+	// already-validated executable. Future sessions still reject that corruption.
+	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(lock.Build.Binary)), []byte("replacement"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if other, err := OpenGenerationSession(filepath.Join(root, "main.dog")); err == nil {
+		_ = other.Close()
+		t.Fatal("new session accepted a corrupt published executable")
+	}
 	output, err := command.Output()
 	if err != nil || string(output) != "retained" {
 		t.Fatalf("retained binary command = %q, %v", output, err)
@@ -47,7 +56,7 @@ func TestGenerationBinaryWindowsHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
-func TestGenerationSessionRetainedBinaryBlocksWindowsReplacement(t *testing.T) {
+func TestGenerationSessionPrivateBinaryBlocksWindowsReplacement(t *testing.T) {
 	root, _, lock := writeValidGeneration(t, true)
 	session, err := OpenGenerationSession(filepath.Join(root, "main.dog"))
 	if err != nil {
@@ -59,8 +68,9 @@ func TestGenerationSessionRetainedBinaryBlocksWindowsReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if command.Path != binary {
-		t.Fatalf("binary command path = %q, want %q", command.Path, binary)
+	private := filepath.Join(session.binary.executable.Path(), GenerationBinaryName())
+	if command.Path != private {
+		t.Fatalf("binary command path = %q, want retained copy %q", command.Path, private)
 	}
 	if got, want := command.Args, []string{binary, "first", "second"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("binary command arguments = %v, want %v", got, want)
@@ -68,11 +78,11 @@ func TestGenerationSessionRetainedBinaryBlocksWindowsReplacement(t *testing.T) {
 	if command.SysProcAttr != nil && len(command.SysProcAttr.AdditionalInheritedHandles) != 0 {
 		t.Fatal("binary command retained an additional inherited handle")
 	}
-	moved := binary + ".moved"
-	if err := os.WriteFile(binary, []byte("replacement"), 0755); err == nil {
+	moved := private + ".moved"
+	if err := os.WriteFile(private, []byte("replacement"), 0755); err == nil {
 		t.Fatal("write succeeded while retained binary was open")
 	}
-	if err := os.Rename(binary, moved); err == nil {
+	if err := os.Rename(private, moved); err == nil {
 		t.Fatal("rename succeeded while retained binary was open")
 	}
 	if err := session.Close(); err != nil {
@@ -81,7 +91,7 @@ func TestGenerationSessionRetainedBinaryBlocksWindowsReplacement(t *testing.T) {
 	if err := os.WriteFile(binary, []byte("replacement"), 0755); err != nil {
 		t.Fatalf("write after close: %v", err)
 	}
-	if err := os.Rename(binary, moved); err != nil {
+	if err := os.Rename(binary, binary+".moved"); err != nil {
 		t.Fatalf("rename after close: %v", err)
 	}
 }

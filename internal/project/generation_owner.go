@@ -462,6 +462,25 @@ func (o *GenerationOwner) RemoveStage() error {
 	if err := o.verify(true); err != nil {
 		return err
 	}
+	if IsLowerHexDigest(o.stageName) {
+		// Under the exclusive publication lease no new session can select this
+		// generation. Drain existing pins before touching its identity ledger.
+		// Low-level publishers may rename an unsealed stage without a marker;
+		// such a directory cannot be selected by a GenerationSession.
+		if _, err := o.stage.Stat(generationMarkerName); err == nil {
+			marker, err := lockGenerationMarker(o.stage, true)
+			if err != nil {
+				return err
+			}
+			// Release before identity-ledger cleanup. The publication lease
+			// prevents another pin in the gap.
+			if err := closeGenerationMarker(marker); err != nil {
+				return err
+			}
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
 	if afterGenerationCleanupVerifyForTest != nil {
 		afterGenerationCleanupVerifyForTest(o.StagePath())
 	}

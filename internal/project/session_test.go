@@ -77,7 +77,7 @@ func TestOpenGenerationSessionReadsVerifiedProjectFileDescriptors(t *testing.T) 
 	}
 }
 
-func TestOpenGenerationSessionReturnsRetainedBinaryAndHoldsLease(t *testing.T) {
+func TestOpenGenerationSessionReturnsRetainedBinaryWithoutBlockingWriter(t *testing.T) {
 	root, _, lock := writeValidGeneration(t, true)
 	session, err := OpenGenerationSession(filepath.Join(root, "main.dog"))
 	if err != nil {
@@ -119,7 +119,10 @@ func TestOpenGenerationSessionReturnsRetainedBinaryAndHoldsLease(t *testing.T) {
 	acquired := make(chan *GenerationLease, 1)
 	errs := make(chan error, 1)
 	go acquireLease(root, true, acquired, errs)
-	assertLeaseBlocked(t, acquired, errs)
+	lease := awaitLease(t, acquired, errs)
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if err := session.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -134,10 +137,6 @@ func TestOpenGenerationSessionReturnsRetainedBinaryAndHoldsLease(t *testing.T) {
 	}
 	if _, err := session.BinaryCommand(); err == nil {
 		t.Fatal("closed generation session created binary command")
-	}
-	lease := awaitLease(t, acquired, errs)
-	if err := lease.Close(); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -407,7 +406,10 @@ func TestGenerationSessionCloseWaitsForReadAndIsConcurrentSafe(t *testing.T) {
 	acquired := make(chan *GenerationLease, 1)
 	leaseErrs := make(chan error, 1)
 	go acquireLease(root, true, acquired, leaseErrs)
-	assertLeaseBlocked(t, acquired, leaseErrs)
+	lease := awaitLease(t, acquired, leaseErrs)
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	unblockRead()
 	var read readResult
@@ -428,10 +430,6 @@ func TestGenerationSessionCloseWaitsForReadAndIsConcurrentSafe(t *testing.T) {
 	}
 	if read.err != nil || string(read.content) != "(ns core)\n" {
 		t.Fatalf("ReadFile = %q, %v", read.content, read.err)
-	}
-	lease := awaitLease(t, acquired, leaseErrs)
-	if err := lease.Close(); err != nil {
-		t.Fatal(err)
 	}
 }
 

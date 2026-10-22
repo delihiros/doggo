@@ -43,7 +43,7 @@ func (app *App) runExecCommand() (err error) {
 	}
 	args := app.args[2:]
 	if writer := execGenerationWriter(args); writer != "" {
-		return fmt.Errorf("doggo exec cannot run generation-writing command %q while holding a generation read lease; run 'doggo %s' directly", writer, writer)
+		return fmt.Errorf("doggo exec cannot run generation-writing command %q; run 'doggo %s' directly", writer, writer)
 	}
 	session, err := defaultOpenGenerationSession(execProjectHint(args))
 	if err != nil {
@@ -98,7 +98,7 @@ func execProjectHint(args []string) string {
 }
 
 // execGenerationWriter rejects the child's generation writer before opening
-// the read session, while leaving invalid/help diagnostics to the child.
+// the retained runtime session, while leaving invalid/help diagnostics to the child.
 func execGenerationWriter(args []string) string {
 	normalized := execChildDispatchArgs(args)
 	if len(normalized) == 0 {

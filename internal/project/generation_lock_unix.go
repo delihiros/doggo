@@ -28,6 +28,14 @@ func lockGenerationFile(file *os.File, exclusive bool) error {
 	return unix.Flock(int(file.Fd()), operation)
 }
 
+func openGenerationPinFile(parent *os.File, name string) (*os.File, error) {
+	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), name), nil
+}
+
 func unlockGenerationFile(file *os.File) error {
 	return unix.Flock(int(file.Fd()), unix.LOCK_UN)
 }

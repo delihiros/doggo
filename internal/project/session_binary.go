@@ -57,7 +57,11 @@ func retainGenerationBinary(generation *os.Root, manifest generationManifest, lo
 	if readErr != nil || afterErr != nil || !sameRegularFile(opened, after) || digest != entry.sha256 || digest != lock.Build.SHA256 {
 		return nil, errors.Join(fmt.Errorf("binary content changed while retaining"), readErr, afterErr, file.Close())
 	}
-	return &generationBinary{file: file, info: opened, size: entry.size, sha256: digest, path: lock.Build.Binary, launchPath: launchPath}, nil
+	binary := &generationBinary{file: file, info: opened, size: entry.size, sha256: digest, path: lock.Build.Binary, launchPath: launchPath}
+	if err := prepareGenerationBinary(binary); err != nil {
+		return nil, errors.Join(err, closeGenerationBinary(binary))
+	}
+	return binary, nil
 }
 
 func (s *GenerationSession) HasBinary() bool {
@@ -66,7 +70,7 @@ func (s *GenerationSession) HasBinary() bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.lease != nil && s.binary != nil
+	return s.pin != nil && s.binary != nil
 }
 
 func (s *GenerationSession) BinarySnapshot() (GenerationBinarySnapshot, error) {
@@ -75,7 +79,7 @@ func (s *GenerationSession) BinarySnapshot() (GenerationBinarySnapshot, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lease == nil {
+	if s.pin == nil {
 		return GenerationBinarySnapshot{}, fmt.Errorf("generation session is closed")
 	}
 	if s.binary == nil {
@@ -111,7 +115,7 @@ func (s *GenerationSession) BinaryCommand(args ...string) (*exec.Cmd, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lease == nil {
+	if s.pin == nil {
 		return nil, fmt.Errorf("generation session is closed")
 	}
 	if s.binary == nil {

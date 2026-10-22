@@ -168,6 +168,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: editors/vscode/package-lock.json
+      - name: Verify release version preparation
+        run: python ../../.github/scripts/test_release_version.py
       - run: npm ci
       - run: npm audit
       - run: npm run verify

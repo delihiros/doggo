@@ -141,7 +141,7 @@ func TestExecReturnsChildExitStatus(t *testing.T) {
 	}
 }
 
-func TestExecHoldsLeaseUntilChildWaitReturns(t *testing.T) {
+func TestExecPinsGenerationWithoutBlockingWriter(t *testing.T) {
 	requireExecShell(t)
 	root := writeCLIRuntimeGeneration(t, []byte(execTestBinary), true)
 	withWorkingDirectory(t, root)
@@ -183,22 +183,12 @@ func TestExecHoldsLeaseUntilChildWaitReturns(t *testing.T) {
 		}
 		writer <- lease
 	}()
-	assertWriterBlocked(t, writer, writerErr)
+	closeWriter(t, writer, writerErr)
 	if err := stdinWriter.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-runErr; err != nil {
 		t.Fatal(err)
-	}
-	select {
-	case lease := <-writer:
-		if err := lease.Close(); err != nil {
-			t.Fatal(err)
-		}
-	case err := <-writerErr:
-		t.Fatal(err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("writer remained blocked after child exited")
 	}
 }
 
@@ -345,18 +335,6 @@ func waitForFile(t *testing.T, path string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", path)
-}
-
-func assertWriterBlocked(t *testing.T, writer <-chan *project.GenerationLease, errs <-chan error) {
-	t.Helper()
-	select {
-	case lease := <-writer:
-		_ = lease.Close()
-		t.Fatal("exclusive writer acquired while generation was executing")
-	case err := <-errs:
-		t.Fatal(err)
-	case <-time.After(100 * time.Millisecond):
-	}
 }
 
 func requireExecShell(t *testing.T) {

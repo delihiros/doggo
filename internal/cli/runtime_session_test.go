@@ -51,7 +51,7 @@ func TestREPLUsesGenerationSourcesFromSession(t *testing.T) {
 	}
 }
 
-func TestFileExecutionHoldsGenerationLeaseUntilLoadCompletes(t *testing.T) {
+func TestFileExecutionDoesNotBlockGenerationWriter(t *testing.T) {
 	root := t.TempDir()
 	writeModAndLock(t, root)
 	ready := filepath.Join(root, "ready")
@@ -68,11 +68,10 @@ func TestFileExecutionHoldsGenerationLeaseUntilLoadCompletes(t *testing.T) {
 	go func() { runErr <- RunFileWithArgsAndVMFrameProfiling(script, nil, false) }()
 	waitForFile(t, ready)
 	writer, writerErr := startExclusiveWriter(root)
-	assertWriterBlocked(t, writer, writerErr)
+	closeWriter(t, writer, writerErr)
 	if err := <-runErr; err != nil {
 		t.Fatal(err)
 	}
-	closeWriter(t, writer, writerErr)
 }
 
 func TestFileExecutionClosesGenerationSessionOnLoadError(t *testing.T) {
@@ -94,7 +93,7 @@ func TestFileExecutionClosesGenerationSessionOnLoadError(t *testing.T) {
 	}
 }
 
-func TestREPLHoldsGenerationLeaseThroughRunnerAndClosesOnError(t *testing.T) {
+func TestREPLAllowsGenerationWriterAndClosesOnError(t *testing.T) {
 	root := t.TempDir()
 	writeModAndLock(t, root)
 	withWorkingDirectory(t, root)
@@ -104,7 +103,7 @@ func TestREPLHoldsGenerationLeaseThroughRunnerAndClosesOnError(t *testing.T) {
 	var writerErr <-chan error
 	runREPLWithRunner = func(*vm.Runner) error {
 		writer, writerErr = startExclusiveWriter(root)
-		assertWriterBlocked(t, writer, writerErr)
+		closeWriter(t, writer, writerErr)
 		return want
 	}
 	t.Cleanup(func() { runREPLWithRunner = old })
@@ -112,10 +111,9 @@ func TestREPLHoldsGenerationLeaseThroughRunnerAndClosesOnError(t *testing.T) {
 	if err := NewApp("test", []string{"repl"}).Dispatch(); !errors.Is(err, want) {
 		t.Fatalf("REPL error = %v", err)
 	}
-	closeWriter(t, writer, writerErr)
 }
 
-func TestLSPLeasesInitializedRootUntilServerExit(t *testing.T) {
+func TestLSPAllowsGenerationWriterBeforeServerExit(t *testing.T) {
 	root := t.TempDir()
 	writeModAndLock(t, root)
 	withWorkingDirectory(t, t.TempDir())
@@ -135,15 +133,14 @@ func TestLSPLeasesInitializedRootUntilServerExit(t *testing.T) {
 	waitForLSPOutput(t, output, `"capabilities"`, runErr)
 
 	writer, writerErr := startExclusiveWriter(root)
-	assertWriterBlocked(t, writer, writerErr)
+	closeWriter(t, writer, writerErr)
 	writeLSPMessage(t, input, map[string]any{"jsonrpc": "2.0", "method": "exit"})
 	if err := <-runErr; err != nil {
 		t.Fatal(err)
 	}
-	closeWriter(t, writer, writerErr)
 }
 
-func TestLSPRejectsDuplicateInitializeWithoutReplacingLease(t *testing.T) {
+func TestLSPRejectsDuplicateInitializeWithoutBlockingWriters(t *testing.T) {
 	rootA := t.TempDir()
 	rootB := t.TempDir()
 	writeModAndLock(t, rootA)
@@ -159,7 +156,7 @@ func TestLSPRejectsDuplicateInitializeWithoutReplacingLease(t *testing.T) {
 	waitForLSPOutput(t, output, `"capabilities"`, runErr)
 
 	writerA, writerAErr := startExclusiveWriter(rootA)
-	assertWriterBlocked(t, writerA, writerAErr)
+	closeWriter(t, writerA, writerAErr)
 	writeLSPMessage(t, input, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      2,
@@ -177,12 +174,12 @@ func TestLSPRejectsDuplicateInitializeWithoutReplacingLease(t *testing.T) {
 
 	writerB, writerBErr := startExclusiveWriter(rootB)
 	closeWriter(t, writerB, writerBErr)
-	assertWriterBlocked(t, writerA, writerAErr)
+	writerA, writerAErr = startExclusiveWriter(rootA)
+	closeWriter(t, writerA, writerAErr)
 	writeLSPMessage(t, input, map[string]any{"jsonrpc": "2.0", "method": "exit"})
 	if err := <-runErr; err != nil {
 		t.Fatal(err)
 	}
-	closeWriter(t, writerA, writerAErr)
 }
 
 func TestLSPReleasesInitializedRootWhenSessionSetupFails(t *testing.T) {

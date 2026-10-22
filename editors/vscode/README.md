@@ -42,7 +42,7 @@ limits. These metadata and compilation checks do not replace editor-host tests.
 5. `doggo.debug.indentTrace`
 
 When `doggo.lsp.command` is empty, the extension runs `doggo exec -- lsp` from `PATH`.
-Run `doggo build` first. REPL execution runs `doggo exec -- repl` and holds the same generation lease through the Doggo CLI.
+Run `doggo build` first. REPL execution runs `doggo exec -- repl`. LSP and REPL retain their selected immutable generation without blocking a direct `doggo build` or `doggo mod sync`. Restart the language server or REPL after an update to use the new dependencies.
 An explicit `doggo.lsp.command` runs that command directly with the `lsp` or `repl` subcommand.
 
 ## Local Development
@@ -118,3 +118,5 @@ Recommended role-based palette:
 
 This repository contains Marketplace-ready packaging metadata and VSIX generation.
 Actual Marketplace publish (`vsce publish`) is intentionally out of scope for this phase.
+
+Release version preparation accepts both the tracked extension version and a different release version. CI exercises the workflow version command against both package manifests before packaging.

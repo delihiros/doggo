@@ -302,7 +302,7 @@ jobs:
       - name: Set extension version
         env:
           VERSION: ${{ steps.version.outputs.value }}
-        run: npm version --no-git-tag-version "${VERSION#v}"
+        run: npm version --allow-same-version --no-git-tag-version "${VERSION#v}"
       - run: npm test
       - run: npm run verify
       - run: npm run package

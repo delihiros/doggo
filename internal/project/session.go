@@ -24,7 +24,7 @@ type GenerationSession struct {
 	auditPaths  []string
 	directories map[string]fs.FileInfo
 	sources     []*GenerationSource
-	lease       *GenerationLease
+	pin         *generationPin
 }
 
 func OpenGenerationSession(scriptPath string) (_ *GenerationSession, err error) {
@@ -80,9 +80,10 @@ func openGenerationSessionRoot(project *os.Root, projectPath string) (_ *Generat
 	var generation *os.Root
 	var binary *generationBinary
 	var sources []*GenerationSource
+	var pin *generationPin
 	defer func() {
 		if err != nil {
-			err = errors.Join(err, closeGenerationBinary(binary), closeGenerationSources(sources), closeRoot(&generation), lease.Close())
+			err = errors.Join(err, closeGenerationBinary(binary), closeGenerationSources(sources), closeRoot(&generation), pin.Close(), lease.Close())
 		}
 	}()
 
@@ -139,6 +140,17 @@ func openGenerationSessionRoot(project *os.Root, projectPath string) (_ *Generat
 			files:   manifest,
 		})
 	}
+	marker, err := lockGenerationMarker(generation, false)
+	if err != nil {
+		return nil, err
+	}
+	pin = &generationPin{file: marker, project: project, doggo: doggo}
+	// Transfer retained directory ownership before releasing the short-lived
+	// publication lease. New writers never mutate this pinned generation.
+	lease.project, lease.doggo = nil, nil
+	if err := lease.Close(); err != nil {
+		return nil, err
+	}
 	session := &GenerationSession{
 		Config: RuntimeConfig{
 			ProjectRoot:       projectPath,
@@ -152,7 +164,7 @@ func openGenerationSessionRoot(project *os.Root, projectPath string) (_ *Generat
 		auditPaths:  auditPaths,
 		directories: directories,
 		sources:     sources,
-		lease:       lease,
+		pin:         pin,
 	}
 	return session, nil
 }
@@ -206,7 +218,7 @@ func (s *GenerationSession) CopyAuditWorkspaceTo(destination *OwnedTree) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.generation == nil || s.lease == nil {
+	if s.generation == nil || s.pin == nil {
 		return fmt.Errorf("generation session is closed")
 	}
 	if destination == nil {
@@ -316,21 +328,21 @@ func (s *GenerationSession) Close() error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lease == nil {
+	if s.pin == nil {
 		return nil
 	}
-	lease := s.lease
+	pin := s.pin
 	generation := s.generation
 	binary := s.binary
 	sources := s.sources
-	s.lease = nil
+	s.pin = nil
 	s.generation = nil
 	s.binary = nil
 	s.manifest = nil
 	s.auditPaths = nil
 	s.directories = nil
 	s.sources = nil
-	return errors.Join(closeGenerationBinary(binary), closeGenerationSources(sources), closeRoot(&generation), lease.Close())
+	return errors.Join(closeGenerationBinary(binary), closeGenerationSources(sources), closeRoot(&generation), pin.Close())
 }
 
 func closeGenerationSources(sources []*GenerationSource) error {
