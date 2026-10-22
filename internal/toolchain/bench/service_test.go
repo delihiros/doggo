@@ -38,7 +38,7 @@ func TestNewStandardRunnerUsesRuntimeOwnedStandardSurface(t *testing.T) {
 	}
 }
 
-func TestServiceHoldsGenerationLeaseThroughRunnerWorkAndClosesOnError(t *testing.T) {
+func TestServicePinsGenerationWithoutBlockingWritersAndClosesOnError(t *testing.T) {
 	root := t.TempDir()
 	if err := project.WriteModFile(project.ModPath(root), &project.ModFile{Module: "example/bench", Deps: []string{}}); err != nil {
 		t.Fatal(err)
@@ -50,7 +50,6 @@ func TestServiceHoldsGenerationLeaseThroughRunnerWorkAndClosesOnError(t *testing
 	if err := prepared.Commit(); err != nil {
 		t.Fatal(err)
 	}
-
 	oldWD, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -60,56 +59,62 @@ func TestServiceHoldsGenerationLeaseThroughRunnerWorkAndClosesOnError(t *testing
 	}
 	t.Cleanup(func() { _ = os.Chdir(oldWD) })
 
-	writer := make(chan *project.GenerationLease, 1)
-	writerErr := make(chan error, 1)
-	assertBlocked := func(stage string) {
+	var session *project.GenerationSession
+	openSession := func(path string) (*project.GenerationSession, error) {
+		var err error
+		session, err = project.OpenGenerationSession(path)
+		if session != nil {
+			t.Cleanup(func() { _ = session.Close() })
+		}
+		return session, err
+	}
+	assertReadableWithConcurrentWriter := func() {
 		t.Helper()
+		done := make(chan error, 1)
+		go func() {
+			lease, err := project.AcquireGenerationLease(root, true)
+			if err == nil {
+				err = lease.Close()
+			}
+			done <- err
+		}()
 		select {
-		case lease := <-writer:
-			_ = lease.Close()
-			t.Fatalf("exclusive writer acquired during benchmark %s", stage)
-		case err := <-writerErr:
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("generation reader blocked a writer")
+		}
+		temporary, err := project.NewOwnedTempRoot("snapshot-check-")
+		if err != nil {
 			t.Fatal(err)
-		case <-time.After(100 * time.Millisecond):
+		}
+		defer temporary.Close()
+		if err := session.CopyAuditWorkspaceTo(temporary.Tree()); err != nil {
+			t.Fatalf("active snapshot became unavailable: %v", err)
 		}
 	}
+
 	want := errors.New("save failed")
-	service := Service{SaveResult: func(*benchdom.Result, string) (string, error) {
-		assertBlocked("result handling")
+	service := Service{OpenGenerationSession: openSession, SaveResult: func(*benchdom.Result, string) (string, error) {
+		assertReadableWithConcurrentWriter()
 		return "", want
 	}}
-	opts := RunOptions{
-		ScenarioName: "baseline/reduce-only-100",
-		Warmup:       0,
-		Iterations:   1,
-		OnProgress: func(event ProgressEvent) {
-			if event.Kind != ProgressScenarioStart {
-				return
-			}
-			go func() {
-				lease, err := project.AcquireGenerationLease(root, true)
-				if err != nil {
-					writerErr <- err
-					return
-				}
-				writer <- lease
-			}()
-			assertBlocked("scenario execution")
-		},
-	}
-
+	opts := RunOptions{ScenarioName: "baseline/reduce-only-100", Warmup: 0, Iterations: 1, OnProgress: func(event ProgressEvent) {
+		if event.Kind == ProgressScenarioStart {
+			assertReadableWithConcurrentWriter()
+		}
+	}}
 	if _, err := service.Run(opts); !errors.Is(err, want) {
 		t.Fatalf("Run error = %v, want %v", err, want)
 	}
-	select {
-	case lease := <-writer:
-		if err := lease.Close(); err != nil {
-			t.Fatal(err)
-		}
-	case err := <-writerErr:
-		t.Fatal(err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("exclusive writer remained blocked after benchmark error")
+
+	if session == nil {
+		t.Fatal("session was not opened")
+	}
+	if _, err := session.BinarySnapshot(); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("service leaked its generation session: %v", err)
 	}
 }
 

@@ -320,7 +320,7 @@ func TestAuditPreparedLockUsesTentativeRoot(t *testing.T) {
 	}
 }
 
-func TestAuditHoldsSharedSessionUntilAuditCompletes(t *testing.T) {
+func TestAuditPinsGenerationWithoutBlockingWriters(t *testing.T) {
 	root := t.TempDir()
 	if err := project.WriteModFile(project.ModPath(root), &project.ModFile{Module: "example/project", Deps: []string{}}); err != nil {
 		t.Fatal(err)
@@ -332,39 +332,61 @@ func TestAuditHoldsSharedSessionUntilAuditCompletes(t *testing.T) {
 	if err := prepared.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	writer := make(chan *project.GenerationLease, 1)
-	errs := make(chan error, 1)
-	auditor := Auditor{AuditLock: func(_, _ string, _ *project.ModFile, _ *project.LockFile) ([]DependencyAuditFinding, error) {
-		go func() {
-			lease, err := project.AcquireGenerationLease(root, true)
-			if err != nil {
-				errs <- err
-				return
+	for i, want := range []error{nil, errors.New("audit failed")} {
+		t.Run([]string{"success", "failure"}[i], func(t *testing.T) {
+
+			var session *project.GenerationSession
+			openSession := func(path string) (*project.GenerationSession, error) {
+				var err error
+				session, err = project.OpenGenerationSession(path)
+				if session != nil {
+					t.Cleanup(func() { _ = session.Close() })
+				}
+				return session, err
 			}
-			writer <- lease
-		}()
-		select {
-		case lease := <-writer:
-			_ = lease.Close()
-			t.Fatal("writer acquired during audit")
-		case err := <-errs:
-			t.Fatal(err)
-		case <-time.After(100 * time.Millisecond):
-		}
-		return nil, nil
-	}}
-	if _, err := auditor.Audit(root); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case lease := <-writer:
-		if err := lease.Close(); err != nil {
-			t.Fatal(err)
-		}
-	case err := <-errs:
-		t.Fatal(err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("writer remained blocked after audit")
+			assertReadableWithConcurrentWriter := func() {
+				t.Helper()
+				done := make(chan error, 1)
+				go func() {
+					lease, err := project.AcquireGenerationLease(root, true)
+					if err == nil {
+						err = lease.Close()
+					}
+					done <- err
+				}()
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("generation reader blocked a writer")
+				}
+				temporary, err := project.NewOwnedTempRoot("snapshot-check-")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer temporary.Close()
+				if err := session.CopyAuditWorkspaceTo(temporary.Tree()); err != nil {
+					t.Fatalf("active snapshot became unavailable: %v", err)
+				}
+			}
+
+			auditor := Auditor{OpenGenerationSession: openSession, AuditLock: func(_, _ string, _ *project.ModFile, _ *project.LockFile) ([]DependencyAuditFinding, error) {
+				assertReadableWithConcurrentWriter()
+				return nil, want
+			}}
+			if _, err := auditor.Audit(root); !errors.Is(err, want) {
+				t.Fatalf("Audit error = %v, want %v", err, want)
+			}
+
+			if session == nil {
+				t.Fatal("session was not opened")
+			}
+			if _, err := session.BinarySnapshot(); err == nil || !strings.Contains(err.Error(), "closed") {
+				t.Fatalf("service leaked its generation session: %v", err)
+			}
+		})
 	}
 }
 

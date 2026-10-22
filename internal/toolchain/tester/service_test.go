@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ type fakeRunner struct {
 	run      func(expr string) (types.Value, error)
 }
 
-func TestServiceHoldsGenerationLeaseThroughRunnerWorkAndClosesOnError(t *testing.T) {
+func TestServicePinsGenerationWithoutBlockingWritersAndClosesOnError(t *testing.T) {
 	for _, failAt := range []string{"load", "execution"} {
 		t.Run(failAt, func(t *testing.T) {
 			root := t.TempDir()
@@ -40,62 +41,68 @@ func TestServiceHoldsGenerationLeaseThroughRunnerWorkAndClosesOnError(t *testing
 				t.Fatal(err)
 			}
 
-			writer := make(chan *project.GenerationLease, 1)
-			writerErr := make(chan error, 1)
-			startWriter := func() {
+			var session *project.GenerationSession
+			openSession := func(path string) (*project.GenerationSession, error) {
+				var err error
+				session, err = project.OpenGenerationSession(path)
+				if session != nil {
+					t.Cleanup(func() { _ = session.Close() })
+				}
+				return session, err
+			}
+			assertReadableWithConcurrentWriter := func() {
+				t.Helper()
+				done := make(chan error, 1)
 				go func() {
 					lease, err := project.AcquireGenerationLease(root, true)
-					if err != nil {
-						writerErr <- err
-						return
+					if err == nil {
+						err = lease.Close()
 					}
-					writer <- lease
+					done <- err
 				}()
-			}
-			assertBlocked := func(stage string) {
-				t.Helper()
 				select {
-				case lease := <-writer:
-					_ = lease.Close()
-					t.Fatalf("exclusive writer acquired during tester %s", stage)
-				case err := <-writerErr:
+				case err := <-done:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("generation reader blocked a writer")
+				}
+				temporary, err := project.NewOwnedTempRoot("snapshot-check-")
+				if err != nil {
 					t.Fatal(err)
-				case <-time.After(100 * time.Millisecond):
+				}
+				defer temporary.Close()
+				if err := session.CopyAuditWorkspaceTo(temporary.Tree()); err != nil {
+					t.Fatalf("active snapshot became unavailable: %v", err)
 				}
 			}
-			want := errors.New(failAt + " failed")
-			service := Service{NewRunner: func(runtimerunner.Config) (Runner, error) {
-				return &fakeRunner{
-					loadFile: func(string) (types.Value, error) {
-						startWriter()
-						assertBlocked("LoadFile")
-						if failAt == "load" {
-							return nil, want
-						}
-						return typeatom.NilValue, nil
-					},
-					run: func(expr string) (types.Value, error) {
-						if expr == "(require 'doggo.test)" {
-							return typeatom.NilValue, nil
-						}
-						assertBlocked("Run")
-						return nil, want
-					},
-				}, nil
-			}}
 
+			want := errors.New(failAt + " failed")
+			service := Service{OpenGenerationSession: openSession, NewRunner: func(runtimerunner.Config) (Runner, error) {
+				return &fakeRunner{loadFile: func(string) (types.Value, error) {
+					assertReadableWithConcurrentWriter()
+					if failAt == "load" {
+						return nil, want
+					}
+					return typeatom.NilValue, nil
+				}, run: func(expr string) (types.Value, error) {
+					if expr == "(require 'doggo.test)" {
+						return typeatom.NilValue, nil
+					}
+					assertReadableWithConcurrentWriter()
+					return nil, want
+				}}, nil
+			}}
 			if _, err := service.Run(RunOptions{Paths: []string{target}, Namespaces: []string{"sample-test"}}); !errors.Is(err, want) {
 				t.Fatalf("Run error = %v, want %v", err, want)
 			}
-			select {
-			case lease := <-writer:
-				if err := lease.Close(); err != nil {
-					t.Fatal(err)
-				}
-			case err := <-writerErr:
-				t.Fatal(err)
-			case <-time.After(5 * time.Second):
-				t.Fatal("exclusive writer remained blocked after tester error")
+
+			if session == nil {
+				t.Fatal("session was not opened")
+			}
+			if _, err := session.BinarySnapshot(); err == nil || !strings.Contains(err.Error(), "closed") {
+				t.Fatalf("service leaked its generation session: %v", err)
 			}
 		})
 	}

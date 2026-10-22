@@ -59,7 +59,7 @@ func TestReleaseServiceBundleRejectsNilGenerationSession(t *testing.T) {
 	}
 }
 
-func TestReleaseServiceBundleHoldsAndClosesGenerationSession(t *testing.T) {
+func TestReleaseServiceBundlePinsGenerationAndAllowsWriters(t *testing.T) {
 	projectRoot, lock := commitReleaseGeneration(t, true)
 	want := errors.New("bundle failed")
 
@@ -71,10 +71,16 @@ func TestReleaseServiceBundleHoldsAndClosesGenerationSession(t *testing.T) {
 		{name: "failure", err: want},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			writer := make(chan *project.GenerationLease, 1)
-			writerErr := make(chan error, 1)
-			writerStarted := make(chan struct{})
+			var session *project.GenerationSession
 			service := Service{
+				OpenGenerationSession: func(path string) (*project.GenerationSession, error) {
+					var err error
+					session, err = project.OpenGenerationSession(path)
+					if session != nil {
+						t.Cleanup(func() { _ = session.Close() })
+					}
+					return session, err
+				},
 				ResolveProjectRoot: func() (string, bool, error) { return projectRoot, true, nil },
 				GenerateReleaseBundle: func(gotRoot string, binary project.GenerationBinarySnapshot, extras []string, outDir, privateKeyPath string) (*releasebundle.ReleaseBundleOutputs, error) {
 					if gotRoot != projectRoot {
@@ -93,15 +99,24 @@ func TestReleaseServiceBundleHoldsAndClosesGenerationSession(t *testing.T) {
 					if len(extras) != 1 || extras[0] != "editors/vscode/dist/doggo-vscode.vsix" {
 						t.Fatalf("extras = %#v", extras)
 					}
-					go acquireReleaseWriter(projectRoot, writer, writerErr, writerStarted)
-					<-writerStarted
+					writerDone := make(chan error, 1)
+					go func() {
+						lease, err := project.AcquireGenerationLease(projectRoot, true)
+						if err == nil {
+							err = lease.Close()
+						}
+						writerDone <- err
+					}()
 					select {
-					case lease := <-writer:
-						_ = lease.Close()
-						t.Fatal("exclusive writer acquired while release bundle used the generation")
-					case err := <-writerErr:
-						t.Fatal(err)
-					case <-time.After(100 * time.Millisecond):
+					case err := <-writerDone:
+						if err != nil {
+							t.Fatal(err)
+						}
+					case <-time.After(5 * time.Second):
+						t.Fatal("release snapshot blocked a writer")
+					}
+					if retained, err := session.BinarySnapshot(); err != nil || retained.SHA256 != binary.SHA256 {
+						t.Fatalf("active release snapshot became unavailable: %v", err)
 					}
 					if tc.err != nil {
 						return nil, tc.err
@@ -118,16 +133,13 @@ func TestReleaseServiceBundleHoldsAndClosesGenerationSession(t *testing.T) {
 			if !errors.Is(err, tc.err) {
 				t.Fatalf("RunBundle error = %v, want %v", err, tc.err)
 			}
-			select {
-			case lease := <-writer:
-				if err := lease.Close(); err != nil {
-					t.Fatal(err)
-				}
-			case err := <-writerErr:
-				t.Fatal(err)
-			case <-time.After(5 * time.Second):
-				t.Fatal("release bundle leaked its shared generation session")
+			if session == nil {
+				t.Fatal("session was not opened")
 			}
+			if _, err := session.BinarySnapshot(); err == nil || !strings.Contains(err.Error(), "closed") {
+				t.Fatalf("service leaked its generation session: %v", err)
+			}
+
 		})
 	}
 }
