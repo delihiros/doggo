@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -108,7 +109,7 @@ class CommitIdentityTests(unittest.TestCase):
                 "repository": {"default_branch": "main"}}
 
     def test_pr_checks_submitted_head_not_synthetic_merge(self):
-        base = self.commit(author="legacy@example.invalid")
+        base = self.commit()
         head = self.commit()
         tree = self.git("rev-parse", "HEAD^{tree}")
         env = dict(os.environ, GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="merge@example.invalid",
@@ -124,21 +125,21 @@ class CommitIdentityTests(unittest.TestCase):
         event["pull_request"]["head"]["sha"] = bad
         self.assertEqual(self.ci("pull_request", event).returncode, 1)
 
-    def test_rebased_feature_push_excludes_only_history_already_in_default_branch(self):
+    def test_rebased_feature_push_checks_submitted_history(self):
         self.commit()
         before = self.git("rev-parse", "HEAD")
         self.git("checkout", "--orphan", "main")
-        base = self.commit(author="legacy@example.invalid")
+        base = self.commit()
         self.git("update-ref", "refs/remotes/origin/main", base)
         head = self.commit()
         clean = self.ci("push", self.push_event(head, before))
         self.assertEqual(clean.returncode, 0, clean.stderr)
         bad = self.commit(author="new@example.invalid")
         self.assertEqual(self.ci("push", self.push_event(bad, head)).returncode, 1)
-        self.assertEqual(len(self.checker.check_identities(self.repository)), 2)
+        self.assertEqual(len(self.checker.check_identities(self.repository)), 1)
 
     def test_default_branch_push_checks_new_commits(self):
-        base = self.commit(author="legacy@example.invalid")
+        base = self.commit()
         head = self.commit()
         event = self.push_event(head, base, "refs/heads/main")
         clean = self.ci("push", event)
@@ -178,6 +179,50 @@ class CommitIdentityTests(unittest.TestCase):
             with self.subTest(name=name, event=event):
                 result = self.ci(name, event)
                 self.assertEqual(result.returncode, 2, result.stderr)
+
+    def test_ci_rejects_inherited_violations_in_pr_base(self):
+        base = self.commit(author="inherited@example.invalid")
+        head = self.commit()
+        event = {"pull_request": {"base": {"sha": base}, "head": {"sha": head}}}
+        result = self.ci("pull_request", event)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(base, result.stderr)
+
+    def test_ci_rejects_inherited_violations_on_default_and_feature_pushes(self):
+        base = self.commit(author="inherited@example.invalid")
+        self.git("update-ref", "refs/remotes/origin/main", base)
+        head = self.commit()
+        for ref in ["refs/heads/main", "refs/heads/topic", "refs/tags/v1"]:
+            with self.subTest(ref=ref):
+                result = self.ci("push", self.push_event(head, base, ref))
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(base, result.stderr)
+
+
+class WorkflowIsolationTests(unittest.TestCase):
+    def test_identity_failure_cannot_skip_secret_scan(self):
+        workflow = (SCRIPT.parents[1] / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        match = re.search(r"\n  secret-scan:\n(.*?)(?=\n  [a-z-]+:\n|\Z)", workflow, re.S)
+        self.assertIsNotNone(match, "missing independent secrets job")
+        job = match.group(1)
+        self.assertNotIn("check_commit_identity.py", job)
+        self.assertNotRegex(job, r"(?m)^\s*needs:")
+        self.assertIn("fetch-depth: 0", job)
+        self.assertIn("gitleaks git . --log-opts=--all --redact", job)
+        self.assertIn("\n  commit-identities:\n", workflow)
+        gate = re.search(r"\n  secrets:\n(.*?)(?=\n  [a-z-]+:\n|\Z)", workflow, re.S).group(1)
+        self.assertIn("needs: [secret-scan, commit-identities]", gate)
+        self.assertIn("if: ${{ always() }}", gate)
+        self.assertIn('test "$SCAN_RESULT" = success && test "$IDENTITY_RESULT" = success', gate)
+
+    def test_release_identity_gate_does_not_prevent_credential_scanning(self):
+        workflow = (SCRIPT.parents[1] / "workflows" / "release.yml").read_text(encoding="utf-8")
+        scan = re.search(r"\n  secrets:\n(.*?)(?=\n  [a-z-]+:\n|\Z)", workflow, re.S).group(1)
+        self.assertIn("needs: source", scan)
+        self.assertNotIn("commit-identities", scan)
+        self.assertIn("gitleaks git . --log-opts=--all --redact", scan)
+        publish = re.search(r"\n  publish:\n(.*)", workflow, re.S).group(1)
+        self.assertIn("needs: [source, cli, vscode, commit-identities]", publish)
 
 
 if __name__ == "__main__":

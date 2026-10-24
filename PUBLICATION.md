@@ -16,15 +16,17 @@ Before contributing to the public repository, set a GitHub noreply identity in i
 git config --local user.email YOUR_NOREPLY_ADDRESS
 ```
 
-CI checks the raw author and committer identities of submitted commits, including actual merge commits. Pull requests check the event's base SHA through head SHA, excluding GitHub's synthetic test merge; integration tests still run on that merge. Feature branch pushes check commits absent from the fetched default branch, so a rebase does not re-report existing default-branch history. Default branch and tag pushes check the event's before/after range, falling back to all reachable history for an initial push or unavailable previous head. Missing PR commits or default branch refs fail the check. Both identities must use a GitHub noreply address; diagnostics identify the commit and role without repeating the email. Check account email choices when making commits through GitHub as well as local Git.
+CI checks raw author and committer identities across the complete reachable history of the submitted head, including actual merge commits. Both identities must use a GitHub noreply address. Pull requests use the event's submitted head, excluding GitHub's synthetic test merge; integration tests still run on that merge. Historical violations inherited from the default branch or a PR base are rejected. Missing required commits or refs fail the check. Diagnostics identify the commit and role without repeating the email. Check account email choices when making commits through GitHub as well as local Git.
 
-The separate **Audit complete commit history** job runs on scheduled and manual CI invocations. It deliberately reports existing identity problems even when the submitted-commit check passes. To verify all history reachable from the current branch before publication, run:
+The `secret-scan` job scans all fetched Git history with gitleaks independently of `commit-identities`. An identity failure cannot skip credential scanning. The existing required `secrets` check remains an aggregate gate: it runs even if either job fails or is skipped, and succeeds only when both succeed. Existing branch protection for `secrets` therefore continues to require both policies without a settings change.
+
+The release workflow strictly checks the selected tag's complete history before publication, independently of credential scanning. Scheduled and manual CI runs also audit the complete checked-out history. There are no legacy identity exceptions or baseline allowances. Run the same strict check locally:
 
 ```bash
 python .github/scripts/check_commit_identity.py
 ```
 
-A successful new-commit check does not sanitize earlier history. If personal identities are already public, preserve the original repository and prepare a separate corrected publication history for review. Changing remote history, tags, or branch protections requires a separate maintainer decision; adding another commit does not remove old identity metadata or copies retained by GitHub.
+Correcting existing identity metadata requires a separately reviewed history rewrite; adding a new commit does not remove old email values. Before rewriting, preserve a recoverable private backup and verify each email-to-account mapping. Replace only verified identities, preserve names, dates, messages, source trees and branch topology, and validate every affected ref. Preserve valid signatures on unchanged commits; signatures on rewritten commits cannot remain valid. Keep backups containing the old metadata private. Remote force pushes, tags and branch protection changes require a separate maintainer decision. Old clones and GitHub-retained copies can still contain the original history after a branch rewrite.
 
 Run the full release checks in the exported repository before publishing it. Publishing the source, changing repository visibility, creating remote tags and uploading releases are separate maintainer operations.
 

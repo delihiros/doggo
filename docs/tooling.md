@@ -126,6 +126,10 @@ doggo build
 doggo exec -- lsp
 ```
 
+登録済みの Go パッケージを `import` すると、その後の公開関数や定数への参照も診断で認識されます。未 import のパッケージや存在しない公開名への参照は未定義として報告されます。
+
+LSP が受信できるメッセージは本文 16 MiB、ヘッダー全体 8 KiB までです。上限超過、重複した `Content-Length`、途中で切れたメッセージはエラーとして接続を終了します。大きなファイルを開いて接続が切れる場合は、Language Server の出力を確認してください。
+
 `doggo build` で現在の generation を用意した後、LSP は標準入出力で接続を待ちます。通常はエディターから起動します。
 
 `doggo exec` は実行中の generation に read lease を保持します。`build`、`mod init/sync`、`deps add/remove/update` を `exec --` 経由で実行すると、書き込み lease を待ち続けることを防ぐため即座にエラーになります。これらは `doggo mod sync` のように直接実行してください。

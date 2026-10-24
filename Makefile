@@ -5,7 +5,7 @@ BIN_DIR := dist/bin
 DOGGO_BINARY := $(BIN_DIR)/doggo
 INTEROP_GEN_BINARY := $(BIN_DIR)/interop_gen
 VSCODE_EXT_DIR := editors/vscode
-GO_TOOLCHAIN ?= go1.26.9
+GO_TOOLCHAIN ?= go1.26.10
 GO ?= go
 GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"doggo/internal/compiler"
+	"doggo/internal/interop"
 	"doggo/internal/syntax/frontend"
 	toolindex "doggo/internal/tooling/index"
 	"doggo/internal/types"
@@ -266,7 +267,28 @@ func lintList(filePath string, list *coll.List, scope *symbolScope, idx *toolind
 			}
 		}
 		return
-	case "require", "import":
+	case "require":
+		return
+	case "import":
+		if len(list.Items) == 2 {
+			if packageName, ok := list.Items[1].(atom.String); ok {
+				if exports, found := interop.LookupPackage(string(packageName)); found {
+					// compileImportForm installs these exact names as globals,
+					// including when the import is nested or precedes an ns form.
+					global := scope
+					for global.parent != nil {
+						global = global.parent
+					}
+					shortName := string(packageName)
+					if slash := strings.LastIndexByte(shortName, '/'); slash >= 0 {
+						shortName = shortName[slash+1:]
+					}
+					for name := range exports {
+						global.define(shortName + "/" + name)
+					}
+				}
+			}
+		}
 		return
 	case "def", "defonce":
 		lintDefLike(filePath, list, scope, idx, currentNS, line, col, issues)

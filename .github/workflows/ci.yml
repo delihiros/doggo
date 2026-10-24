@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.26.9'
+  GO_VERSION: '1.26.10'
   NODE_VERSION: '24.21.0'
 
 jobs:
@@ -103,22 +103,43 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
 
-  secrets:
+  secret-scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Test commit identity checks
-        run: python .github/scripts/test_commit_identity.py
-      - name: Verify new commit identities
-        if: github.event_name == 'push' || github.event_name == 'pull_request'
-        run: python .github/scripts/check_commit_identity.py --ci
       - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
       - run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
       - run: gitleaks git . --log-opts=--all --redact --no-banner
+
+  # Preserve the existing required check while allowing both checks to run
+  # independently. always() prevents an identity failure from skipping this gate.
+  secrets:
+    needs: [secret-scan, commit-identities]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require both credential scanning and identity policy
+        env:
+          SCAN_RESULT: ${{ needs.secret-scan.result }}
+          IDENTITY_RESULT: ${{ needs.commit-identities.result }}
+        run: test "$SCAN_RESULT" = success && test "$IDENTITY_RESULT" = success
+
+  commit-identities:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Test commit identity checks and scanner independence
+        run: python .github/scripts/test_commit_identity.py
+      - name: Verify complete submitted commit history
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        run: >-
+          python .github/scripts/check_commit_identity.py --ci
 
   commit-history:
     name: Audit complete commit history
@@ -128,7 +149,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - run: python .github/scripts/check_commit_identity.py
+      - run: >-
+          python .github/scripts/check_commit_identity.py
 
   vscode:
     strategy:

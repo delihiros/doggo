@@ -88,7 +88,11 @@ def main():
         parser.error("--ci cannot be combined with an explicit revision or base")
     try:
         revision, base = ci_range(args.repository) if args.ci else (args.revision, args.base)
-        issues = check_identities(args.repository, revision, base)
+        if args.ci and base is not None:
+            resolve_commit(args.repository, base)
+        # CI checks the complete submitted ancestry, including inherited violations.
+        # GitHub's synthetic PR merge is excluded by ci_range, not by an exception.
+        issues = check_identities(args.repository, revision, None if args.ci else base)
     except (ValueError, KeyError, TypeError, OSError, subprocess.CalledProcessError) as exc:
         print(f"Could not verify commit identities: {type(exc).__name__}", file=sys.stderr)
         return 2

@@ -153,7 +153,7 @@ directory 内で生成・同期し、directory 単位で一括公開する。既
 
 ### 5.1 Core
 
-1. `go env GOTOOLCHAIN GOVERSION GOTOOLDIR` が `go1.26.9` に揃っていること
+1. `go env GOTOOLCHAIN GOVERSION GOTOOLDIR` が `go1.26.10` に揃っていること
 2. `go test ./...`
 3. `make test-coverage`
 4. `doggo lint .`
