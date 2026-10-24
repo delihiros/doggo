@@ -105,7 +105,7 @@ var builtinsSchema = []BuiltinDefinition{
 				return nil, err
 			}
 
-			stream, err := schema.Shrink(compiled, args[1])
+			stream, err := schema.ShrinkWithContext(ctx, compiled, args[1])
 			if err != nil {
 				return nil, err
 			}
@@ -130,7 +130,7 @@ var builtinsSchema = []BuiltinDefinition{
 				return nil, err
 			}
 
-			values, err := schema.ShrinkSeq(compiled, args[1], count)
+			values, err := schema.ShrinkSeqWithContext(ctx, compiled, args[1], count)
 			if err != nil {
 				return nil, err
 			}

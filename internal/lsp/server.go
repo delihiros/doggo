@@ -546,7 +546,9 @@ func (s *Server) handleCompletion(msg message) error {
 		return s.respond(msg.ID, []any{})
 	}
 
-	ns := s.state.index.NamespaceForURI(params.TextDocument.URI)
+	ns := s.state.index.NamespaceAtPosition(params.TextDocument.URI, toolindex.Position{
+		Line: params.Position.Line + 1, Column: params.Position.Character + 1,
+	})
 	prefix := prefixAtPosition(source, params.Position.Line, params.Position.Character)
 	candidates := s.state.index.CompletionCandidates(ns, prefix)
 
@@ -582,7 +584,9 @@ func (s *Server) handleDefinition(msg message) error {
 		return s.respond(msg.ID, []any{})
 	}
 
-	ns := s.state.index.NamespaceForURI(params.TextDocument.URI)
+	ns := s.state.index.NamespaceAtPosition(params.TextDocument.URI, toolindex.Position{
+		Line: params.Position.Line + 1, Column: params.Position.Character + 1,
+	})
 	def, found := s.state.index.ResolveDefinition(ns, symbol)
 	if !found || def.URI == "" {
 		return s.respond(msg.ID, []any{})
@@ -828,7 +832,9 @@ func (s *Server) handleHover(msg message) error {
 		return s.respond(msg.ID, nil)
 	}
 
-	currentNS := s.state.index.NamespaceForURI(params.TextDocument.URI)
+	currentNS := s.state.index.NamespaceAtPosition(params.TextDocument.URI, toolindex.Position{
+		Line: params.Position.Line + 1, Column: params.Position.Character + 1,
+	})
 	hover, ok := s.state.index.ResolveHover(currentNS, symbol)
 	if !ok {
 		return s.respond(msg.ID, nil)
@@ -2310,7 +2316,7 @@ func (c *occurrenceCollector) parseList(scope *occurrenceScope, quoted bool) {
 		c.parseForLike(scope, quoted)
 	case "doseq", "dotimes":
 		c.parseSingleBindingMacro(scope, quoted, syntaxHead == "dotimes")
-	case "if-let", "when-let", "when-first":
+	case "if-let", "when-let", "when-first", "if-some", "when-some":
 		c.parseIfWhenLet(scope, quoted, syntaxHead)
 	case "as->":
 		c.parseAsThread(scope, quoted)
@@ -2933,7 +2939,7 @@ func (c *occurrenceCollector) parseBindingVector(scope *occurrenceScope, quoted 
 }
 
 func (c *occurrenceCollector) parseIfWhenLet(scope *occurrenceScope, quoted bool, head string) {
-	c.next() // if-let/when-let/when-first
+	c.next() // resolved core conditional binding macro
 	child := newOccurrenceScope(scope)
 	c.consumeMetadataPrefixes()
 	if c.peek().Type == lexer.LBRACKET {
@@ -2949,7 +2955,7 @@ func (c *occurrenceCollector) parseIfWhenLet(scope *occurrenceScope, quoted bool
 			child.define(name)
 		}
 	}
-	if head != "if-let" {
+	if head != "if-let" && head != "if-some" {
 		c.parseUntil(child, quoted, lexer.RPAREN)
 		return
 	}

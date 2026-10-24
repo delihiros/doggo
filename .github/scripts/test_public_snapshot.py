@@ -8,6 +8,55 @@ from pathlib import Path
 
 
 class PublicSnapshotTests(unittest.TestCase):
+    def test_current_tracked_checkout_exports_with_valid_public_links(self):
+        repository = Path(__file__).resolve().parents[2]
+        spec = importlib.util.spec_from_file_location("public_snapshot", Path(__file__).with_name("prepare-public-source.py"))
+        exporter = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(exporter)
+        head_before = exporter.git(repository, "rev-parse", "HEAD")
+        config_before = exporter.git(repository, "config", "--local", "--list", "--null")
+        tracked = {}
+        for entry in exporter.git(repository, "ls-files", "--stage", "-z").decode("utf-8").split("\0"):
+            if entry:
+                metadata, name = entry.split("\t", 1)
+                mode, _, stage = metadata.split()
+                self.assertEqual(stage, "0", f"Unmerged tracked file: {name}")
+                self.assertIn(mode, {"100644", "100755"}, f"Unsupported tracked mode: {name}")
+                tracked[name] = mode
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            for name in tracked:
+                target = source / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((repository / name).read_bytes())
+            try:
+                exporter.git(source, "init", "-q")
+                # Commit current bytes without applying checkout-specific text or content filters.
+                (source / ".git/info/attributes").write_text("* -text -filter -ident\n", encoding="utf-8")
+                exporter.git(source, "add", "--force", ".")
+                for mode in {"100644", "100755"}:
+                    names = [name for name in tracked if tracked[name] == mode]
+                    for offset in range(0, len(names), 100):
+                        exporter.git(source, "update-index", "--chmod=" + ("+x" if mode == "100755" else "-x"), "--", *names[offset:offset + 100])
+                exporter.git(source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "-c", "commit.gpgsign=false", "-c", f"core.hooksPath={source / '.git/no-hooks'}", "commit", "-qm", "Current tracked checkout")
+                destination = root / "public"
+                exported = exporter.export_public_source(source, destination)
+                self.assertIn("editors/vscode/README.md", exported)
+                self.assertNotIn("editors/vscode/DEPENDENCY_REVIEW.md", exported)
+                self.assertFalse((destination / "editors/vscode/DEPENDENCY_REVIEW.md").exists())
+                for name in ("LICENSE", "THIRD_PARTY_NOTICES", "editors/vscode/LICENSE", "editors/vscode/THIRD_PARTY_NOTICES"):
+                    self.assertEqual((destination / name).read_bytes(), (repository / name).read_bytes(), name)
+                for entry in exporter.git(destination, "ls-files", "--stage", "-z").decode("utf-8").split("\0"):
+                    if entry:
+                        metadata, name = entry.split("\t", 1)
+                        self.assertEqual(metadata.split()[0], tracked[name], name)
+                self.assertEqual(exporter.git(destination, "rev-list", "--all", "--count").strip(), b"1")
+            finally:
+                self.assertEqual(exporter.git(repository, "rev-parse", "HEAD"), head_before)
+                self.assertEqual(exporter.git(repository, "config", "--local", "--list", "--null"), config_before)
+
     def test_git_routing_environment_cannot_modify_original_repository(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

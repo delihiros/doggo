@@ -3,6 +3,7 @@ package reify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -14,6 +15,7 @@ import (
 )
 
 var (
+	_ = errors.Join
 	_ = fmt.Sprintf
 	_ = os.Stderr
 	_ = reflect.TypeOf
@@ -84,8 +86,19 @@ func (b *FmtStringerImpl) String() string {
 	result, err = b.invoker.Invoke(callCtx, fnVal, args, b.env)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: error in reified method Stringer.String: %v\n", err)
+		return zeroValue[string]()
 	}
-	return unwrapResult[string](result)
+	resultValues, err := unwrapResults(result, 1)
+	result0, result0Err := unwrapResult[string](resultValues[0])
+	if result0Err != nil {
+		err = errors.Join(err, fmt.Errorf("result 0: %w", result0Err))
+	}
+	if err != nil {
+		err = fmt.Errorf("reify result conversion failed for Stringer.String: %w", err)
+		fmt.Fprintf(os.Stderr, "warning: error in reified method Stringer.String: %v\n", err)
+		return zeroValue[string]()
+	}
+	return result0
 }
 
 // NewFmtStringerImpl は新しいFmtStringerImplを作成します。
@@ -141,6 +154,7 @@ func (b *HttpHandlerImpl) ServeHTTP(arg0 http.ResponseWriter, arg1 *http.Request
 	result, err = b.invoker.Invoke(callCtx, fnVal, args, b.env)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: error in reified method Handler.ServeHTTP: %v\n", err)
+		return
 	}
 	_ = result
 }
@@ -171,44 +185,56 @@ func wrapGoValue(v interface{}) (types.Value, error) {
 	return val, nil
 }
 
-func unwrapResult[T any](v types.Value) T {
+// unwrapResults validates arity but retains available slots so conversion errors
+// can be reported together with any real Go errors returned by the callback.
+func unwrapResults(v types.Value, count int) ([]types.Value, error) {
+	values := make([]types.Value, count)
+	if count == 1 {
+		values[0] = v
+		return values, nil
+	}
+	vec, ok := v.(types.Vector)
+	if !ok {
+		return values, fmt.Errorf("expected vector with %d results, got %T", count, v)
+	}
+	for i := 0; i < count && i < vec.Count(); i++ {
+		values[i] = vec.Nth(i)
+	}
+	if vec.Count() != count {
+		return values, fmt.Errorf("expected vector with %d results, got %d", count, vec.Count())
+	}
+	return values, nil
+}
+
+func unwrapResult[T any](v types.Value) (T, error) {
 	var zero T
 	if v == nil || v == atom.NilValue {
-		return zero
+		v = atom.NilValue
 	}
 	if goObj, ok := v.(*atom.GoObject); ok {
-		if typed, ok := goObj.Unwrap().(T); ok {
-			return typed
+		if goObj == nil || goObj.Unwrap() == nil {
+			v = atom.NilValue
+		} else if typed, ok := goObj.Unwrap().(T); ok {
+			return typed, nil
 		}
 	}
-	if typed, ok := v.(T); ok {
-		return typed
+	if v != atom.NilValue {
+		if typed, ok := v.(T); ok {
+			return typed, nil
+		}
 	}
 	targetType := reflect.TypeOf((*T)(nil)).Elem()
 	converted, err := interop.ConvertDoggoToReflectValue(v, targetType)
-	if err != nil || !converted.IsValid() {
-		return zero
+	if err != nil {
+		return zero, err
 	}
-	if typed, ok := converted.Interface().(T); ok {
-		return typed
+	if !converted.IsValid() || !converted.Type().AssignableTo(targetType) {
+		return zero, fmt.Errorf("cannot convert %T to %s", v, targetType)
 	}
-	return zero
-}
-
-// unwrapToError はDoggo値をerrorに変換します。
-func unwrapToError(v types.Value) error {
-	if v == nil || v == atom.NilValue {
-		return nil
-	}
-	if err, ok := v.(error); ok {
-		return err
-	}
-	if goObj, ok := v.(*atom.GoObject); ok {
-		if err, ok := goObj.Unwrap().(error); ok {
-			return err
-		}
-	}
-	return nil
+	// Set also handles a nil interface result, which cannot be type-asserted.
+	var result T
+	reflect.ValueOf(&result).Elem().Set(converted)
+	return result, nil
 }
 
 func init() {

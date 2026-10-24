@@ -86,6 +86,8 @@ type ParamInfo struct {
 
 type ResultInfo struct {
 	Type string
+	// IsError records Go type identity; Type retains alias spelling for signatures.
+	IsError bool
 }
 
 type InterfaceImplData struct {
@@ -136,6 +138,7 @@ func newImportSet() *importSet {
 	}
 	for _, fixed := range []ImportInfo{
 		{Alias: "context", Path: "context"},
+		{Alias: "errors", Path: "errors"},
 		{Alias: "fmt", Path: "fmt"},
 		{Alias: "os", Path: "os"},
 		{Alias: "reflect", Path: "reflect"},
@@ -152,7 +155,8 @@ func newImportSet() *importSet {
 	}
 	for _, name := range []string{
 		"CallbackInvoker", "callbackContextProvider", "callbackCallContext",
-		"zeroValue", "wrapGoValue", "unwrapResult", "unwrapToError",
+		"zeroValue", "wrapGoValue", "unwrapResult", "unwrapResults",
+		"resultValues",
 	} {
 		imports.reserve(name)
 	}
@@ -223,6 +227,7 @@ package reify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -238,6 +243,7 @@ import (
 )
 
 var (
+	_ = errors.Join
 	_ = fmt.Sprintf
 	_ = os.Stderr
 	_ = reflect.TypeOf
@@ -302,7 +308,7 @@ func (b *{{ $implementation.StructName }}) {{ $method.Name }}({{ range $i, $p :=
 	}
 	if fnVal == nil {
 		{{- if $method.HasError }}
-		return {{ range $i, $r := $method.Results }}{{ if $i }}, {{ end }}{{ if eq $r.Type "error" }}fmt.Errorf("method {{ $method.Name }} not implemented"){{ else }}zeroValue[{{ $r.Type }}](){{ end }}{{ end }}
+		return {{ range $i, $r := $method.Results }}{{ if $i }}, {{ end }}{{ if $r.IsError }}fmt.Errorf("method {{ $method.Name }} not implemented"){{ else }}zeroValue[{{ $r.Type }}](){{ end }}{{ end }}
 		{{- else if $method.Results }}
 		return {{ range $i, $r := $method.Results }}{{ if $i }}, {{ end }}zeroValue[{{ $r.Type }}](){{ end }}
 		{{- else }}
@@ -317,7 +323,7 @@ func (b *{{ $implementation.StructName }}) {{ $method.Name }}({{ range $i, $p :=
 	{{ .Name }}Value, err := wrapGoValue({{ .Value }})
 	if err != nil {
 		{{- if $method.HasError }}
-		return {{ range $i, $r := $method.Results }}{{ if $i }}, {{ end }}{{ if eq $r.Type "error" }}err{{ else }}zeroValue[{{ $r.Type }}](){{ end }}{{ end }}
+		return {{ range $i, $r := $method.Results }}{{ if $i }}, {{ end }}{{ if $r.IsError }}err{{ else }}zeroValue[{{ $r.Type }}](){{ end }}{{ end }}
 		{{- else }}
 		fmt.Fprintf(os.Stderr, "warning: error in reified method {{ $implementation.InterfaceName }}.{{ $method.Name }}: %v\n", err)
 		{{- if $method.Results }}
@@ -338,28 +344,38 @@ func (b *{{ $implementation.StructName }}) {{ $method.Name }}({{ range $i, $p :=
 
 	{{- if $method.HasError }}
 	if err != nil {
-		return {{ range $i, $r := $method.Results }}{{ if $i }}, {{ end }}{{ if eq $r.Type "error" }}err{{ else }}zeroValue[{{ $r.Type }}](){{ end }}{{ end }}
+		return {{ range $i, $r := $method.Results }}{{ if $i }}, {{ end }}{{ if $r.IsError }}err{{ else }}zeroValue[{{ $r.Type }}](){{ end }}{{ end }}
 	}
 	{{- else }}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: error in reified method {{ $implementation.InterfaceName }}.{{ $method.Name }}: %v\n", err)
+		{{- if $method.Results }}
+		return {{ range $i, $r := $method.Results }}{{ if $i }}, {{ end }}zeroValue[{{ $r.Type }}](){{ end }}
+		{{- else }}
+		return
+		{{- end }}
 	}
 	{{- end }}
 
 	{{- if $method.Results }}
-	{{- if eq (len $method.Results) 1 }}
-	{{- $r := index $method.Results 0 }}
-	{{- if eq $r.Type "error" }}
-	return unwrapToError(result)
-	{{- else }}
-	return unwrapResult[{{ $r.Type }}](result)
-	{{- end }}
-	{{- else }}
-	if vec, ok := result.(types.Vector); ok && vec.Count() >= {{ len $method.Results }} {
-		return {{ range $i, $r := $method.Results }}{{ if $i }}, {{ end }}{{ if eq $r.Type "error" }}unwrapToError(vec.Nth({{ $i }})){{ else }}unwrapResult[{{ $r.Type }}](vec.Nth({{ $i }})){{ end }}{{ end }}
+	resultValues, err := unwrapResults(result, {{ len $method.Results }})
+	{{- range $i, $r := $method.Results }}
+	result{{ $i }}, result{{ $i }}Err := unwrapResult[{{ $r.Type }}](resultValues[{{ $i }}])
+	if result{{ $i }}Err != nil {
+		err = errors.Join(err, fmt.Errorf("result {{ $i }}: %w", result{{ $i }}Err))
 	}
-	return {{ range $i, $r := $method.Results }}{{ if $i }}, {{ end }}zeroValue[{{ $r.Type }}](){{ end }}
 	{{- end }}
+	if err != nil {
+		err = fmt.Errorf("reify result conversion failed for {{ $implementation.InterfaceName }}.{{ $method.Name }}: %w", err)
+		{{- if $method.HasError }}
+		err = errors.Join(err{{ range $i, $r := $method.Results }}{{ if $r.IsError }}, result{{ $i }}{{ end }}{{ end }})
+		return {{ range $i, $r := $method.Results }}{{ if $i }}, {{ end }}{{ if $r.IsError }}err{{ else }}zeroValue[{{ $r.Type }}](){{ end }}{{ end }}
+		{{- else }}
+		fmt.Fprintf(os.Stderr, "warning: error in reified method {{ $implementation.InterfaceName }}.{{ $method.Name }}: %v\n", err)
+		return {{ range $i, $r := $method.Results }}{{ if $i }}, {{ end }}zeroValue[{{ $r.Type }}](){{ end }}
+		{{- end }}
+	}
+	return {{ range $i, $r := $method.Results }}{{ if $i }}, {{ end }}result{{ $i }}{{ end }}
 	{{- else }}
 	_ = result
 	{{- end }}
@@ -393,44 +409,56 @@ func wrapGoValue(v interface{}) (types.Value, error) {
 	return val, nil
 }
 
-func unwrapResult[T any](v types.Value) T {
+// unwrapResults validates arity but retains available slots so conversion errors
+// can be reported together with any real Go errors returned by the callback.
+func unwrapResults(v types.Value, count int) ([]types.Value, error) {
+	values := make([]types.Value, count)
+	if count == 1 {
+		values[0] = v
+		return values, nil
+	}
+	vec, ok := v.(types.Vector)
+	if !ok {
+		return values, fmt.Errorf("expected vector with %d results, got %T", count, v)
+	}
+	for i := 0; i < count && i < vec.Count(); i++ {
+		values[i] = vec.Nth(i)
+	}
+	if vec.Count() != count {
+		return values, fmt.Errorf("expected vector with %d results, got %d", count, vec.Count())
+	}
+	return values, nil
+}
+
+func unwrapResult[T any](v types.Value) (T, error) {
 	var zero T
 	if v == nil || v == atom.NilValue {
-		return zero
+		v = atom.NilValue
 	}
 	if goObj, ok := v.(*atom.GoObject); ok {
-		if typed, ok := goObj.Unwrap().(T); ok {
-			return typed
+		if goObj == nil || goObj.Unwrap() == nil {
+			v = atom.NilValue
+		} else if typed, ok := goObj.Unwrap().(T); ok {
+			return typed, nil
 		}
 	}
-	if typed, ok := v.(T); ok {
-		return typed
+	if v != atom.NilValue {
+		if typed, ok := v.(T); ok {
+			return typed, nil
+		}
 	}
 	targetType := reflect.TypeOf((*T)(nil)).Elem()
 	converted, err := interop.ConvertDoggoToReflectValue(v, targetType)
-	if err != nil || !converted.IsValid() {
-		return zero
+	if err != nil {
+		return zero, err
 	}
-	if typed, ok := converted.Interface().(T); ok {
-		return typed
+	if !converted.IsValid() || !converted.Type().AssignableTo(targetType) {
+		return zero, fmt.Errorf("cannot convert %T to %s", v, targetType)
 	}
-	return zero
-}
-
-// unwrapToError はDoggo値をerrorに変換します。
-func unwrapToError(v types.Value) error {
-	if v == nil || v == atom.NilValue {
-		return nil
-	}
-	if err, ok := v.(error); ok {
-		return err
-	}
-	if goObj, ok := v.(*atom.GoObject); ok {
-		if err, ok := goObj.Unwrap().(error); ok {
-			return err
-		}
-	}
-	return nil
+	// Set also handles a nil interface result, which cannot be type-asserted.
+	var result T
+	reflect.ValueOf(&result).Elem().Set(converted)
+	return result, nil
 }
 
 func init() {
@@ -810,10 +838,12 @@ func parseInterface(ifaceType *types.Interface, pkgPath, pkgAlias, ifaceName str
 			result := results.At(j)
 			collectTypeImports(result.Type(), imports)
 			resultType := types.TypeString(result.Type(), imports.qualifier)
+			isError := types.Identical(types.Unalias(result.Type()), types.Universe.Lookup("error").Type())
 			bm.Results = append(bm.Results, ResultInfo{
-				Type: resultType,
+				Type:    resultType,
+				IsError: isError,
 			})
-			if resultType == "error" {
+			if isError {
 				bm.HasError = true
 			}
 		}
@@ -1101,6 +1131,17 @@ func selectReifyCandidates(valid []resolvedReifyCandidate) ([]resolvedReifyCandi
 
 func renderReifyFile(candidates []resolvedReifyCandidate) ([]byte, error) {
 	imports := newImportSet()
+	// Reserve result locals before assigning any package qualifiers. A result's
+	// type may name a package that would otherwise be shadowed by an earlier slot.
+	for _, candidate := range candidates {
+		for i := 0; i < candidate.resolved.Interface.NumMethods(); i++ {
+			sig := candidate.resolved.Interface.Method(i).Type().(*types.Signature)
+			for j := 0; j < sig.Results().Len(); j++ {
+				imports.reserve(fmt.Sprintf("result%d", j))
+				imports.reserve(fmt.Sprintf("result%dErr", j))
+			}
+		}
+	}
 	implementations := make([]InterfaceImplData, 0, len(candidates))
 	for _, candidate := range candidates {
 		pkgAlias := imports.add(candidate.pkg.PkgPath, candidate.pkg.Name)
