@@ -65,3 +65,25 @@ Marketplace installation or publishing, and the Go test suite. The local
 PRs #4/#5 were reviewed through their diffs rather than independently built.
 Before claiming end-to-end 1.90 compatibility, install the VSIX in VS Code
 1.90, run `doggo build`, open a `.dog` workspace, and check the features above.
+
+## Security follow-up — 2026-10-24
+
+CI's `npm audit` now reports [GHSA-xcx6-jx8p-x3h5](https://github.com/AzureAD/microsoft-authentication-library-for-js/security/advisories/GHSA-xcx6-jx8p-x3h5)
+through `@vscode/vsce@4.0.0 → @azure/identity@4.13.3 → @azure/msal-node@6.0.1`.
+MSAL Node versions before 7.1.0 in this series are affected. The current
+Azure Identity 4.14.0 still declares MSAL Node `^6.0.0`, so updating within
+the parent's declared range cannot select the security fix.
+
+Use an override scoped to Azure Identity's MSAL Node dependency, requiring
+`^7.1.0` and locking 7.1.1 with MSAL Common 16.14.3. Remove the override once
+Azure Identity's dependency range selects a patched release normally.
+This dependency belongs to the VSIX packaging tool; the extension continues
+to use languageclient 9.0.1 and VS Code 1.90 APIs. MSAL Node 7 retains the
+Node 20 minimum. Its v7 interactive-authentication change removes the
+`responseMode` option, which this Azure Identity version does not pass.
+
+Validate with a fresh `npm ci`, `npm audit`, `npm run verify`, and
+`npm run package`. Offline smoke checks also load Azure Identity and
+construct its default and client-secret credentials. These checks cover
+local tooling and packaging; Marketplace authentication needs a separate
+maintainer validation when publishing.
