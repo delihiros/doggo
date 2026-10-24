@@ -11,6 +11,7 @@
 package vm
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"reflect"
@@ -61,73 +62,96 @@ var builtinsChannel = []BuiltinDefinition{
 	},
 	{
 		Name: "alts!",
-		Builtin: &Builtin{Fn: func(args ...types.Value) types.Value {
-			if err := CheckArgRange("alts!", args, 1, 2); err != nil {
-				return err
+		Builtin: &Builtin{CtxFn: func(ctx context.Context, args ...types.Value) (types.Value, error) {
+			if err := CheckArgRangeCtx("alts!", args, 1, 2); err != nil {
+				return nil, err
 			}
 
 			ports, errVal := parseAltsPorts(args[0])
 			if errVal != nil {
-				return errVal
+				return errVal, nil
 			}
 
 			opts := altsOptions{}
 			if len(args) == 2 {
 				parsedOpts, optErr := parseAltsOptions(args[1])
 				if optErr != nil {
-					return optErr
+					return optErr, nil
 				}
 				opts = parsedOpts
 			}
+			if ctx == nil {
+				ctx = context.Background()
+			}
 
 			if opts.priority {
-				result, selected, priorityErr := selectPriorityReadyPort(ports)
+				result, selected, priorityErr := selectPriorityReadyPort(ctx, ports)
 				if priorityErr != nil {
-					return priorityErr
+					return nil, priorityErr
 				}
 				if selected {
-					return result
+					return result, nil
 				}
 			}
 
-			result, selectErr := selectWithOptions(ports, opts)
-			if selectErr != nil {
-				return selectErr
-			}
-			return result
+			return selectWithOptions(ctx, ports, opts)
 		}},
 	},
 	{
 		Name: ">!",
-		Builtin: &Builtin{Fn: func(args ...types.Value) types.Value {
-			if err := CheckArgCount(">!", args, 2); err != nil {
-				return err
+		Builtin: &Builtin{CtxFn: func(ctx context.Context, args ...types.Value) (result types.Value, err error) {
+			if err := CheckArgCountCtx(">!", args, 2); err != nil {
+				return nil, err
 			}
 			ch, ok := args[0].(*types.Channel)
 			if !ok {
-				return newArgumentError(">!: first argument must be a channel, got %s", args[0].Type())
+				return nil, newArgumentError(">!: first argument must be a channel, got %s", args[0].Type())
 			}
-			if err := ch.Send(args[1]); err != nil {
-				return RuntimeErrf(">!", "%v", err)
+			if ctx == nil {
+				ctx = context.Background()
 			}
-			return atom.NilValue
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					result = nil
+					err = RuntimeErrf(">!", "%v", recovered)
+				}
+			}()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case ch.Value <- args[1]:
+				return atom.NilValue, nil
+			}
 		}},
 	},
 	{
 		Name: "<!",
-		Builtin: &Builtin{Fn: func(args ...types.Value) types.Value {
-			if err := CheckArgCount("<!", args, 1); err != nil {
-				return err
+		Builtin: &Builtin{CtxFn: func(ctx context.Context, args ...types.Value) (types.Value, error) {
+			if err := CheckArgCountCtx("<!", args, 1); err != nil {
+				return nil, err
 			}
 			ch, ok := args[0].(*types.Channel)
 			if !ok {
-				return newArgumentError("<!: argument must be a channel, got %s", args[0].Type())
+				return nil, newArgumentError("<!: argument must be a channel, got %s", args[0].Type())
 			}
-			val, ok := ch.Receive()
-			if !ok {
-				return atom.NilValue
+			if ctx == nil {
+				ctx = context.Background()
 			}
-			return val
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case val, ok := <-ch.Value:
+				if !ok {
+					return atom.NilValue, nil
+				}
+				return val, nil
+			}
 		}},
 	},
 	{
@@ -310,8 +334,11 @@ func parseAltsOptions(raw types.Value) (altsOptions, types.Value) {
 	return opts, nil
 }
 
-func selectPriorityReadyPort(ports []altsPort) (types.Value, bool, types.Value) {
+func selectPriorityReadyPort(ctx context.Context, ports []altsPort) (types.Value, bool, error) {
 	for _, port := range ports {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
 		cases := []reflect.SelectCase{
 			buildAltsSelectCase(port),
 			{Dir: reflect.SelectDefault},
@@ -331,11 +358,19 @@ func selectPriorityReadyPort(ports []altsPort) (types.Value, bool, types.Value) 
 	return nil, false, nil
 }
 
-func selectWithOptions(ports []altsPort, opts altsOptions) (types.Value, types.Value) {
-	cases := make([]reflect.SelectCase, 0, len(ports)+1)
+func selectWithOptions(ctx context.Context, ports []altsPort, opts altsOptions) (types.Value, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	cases := make([]reflect.SelectCase, 0, len(ports)+2)
 	for _, port := range ports {
 		cases = append(cases, buildAltsSelectCase(port))
 	}
+	cancelIndex := len(cases)
+	cases = append(cases, reflect.SelectCase{
+		Dir:  reflect.SelectRecv,
+		Chan: reflect.ValueOf(ctx.Done()),
+	})
 
 	if opts.hasDefault {
 		cases = append(cases, reflect.SelectCase{Dir: reflect.SelectDefault})
@@ -355,6 +390,9 @@ func selectWithOptions(ports []altsPort, opts altsOptions) (types.Value, types.V
 
 	if selectedIdx < len(ports) {
 		return buildAltsPortResult(ports[selectedIdx], recv, recvOK)
+	}
+	if selectedIdx == cancelIndex {
+		return nil, ctx.Err()
 	}
 
 	if opts.hasDefault {
@@ -388,7 +426,7 @@ func buildAltsSelectCase(port altsPort) reflect.SelectCase {
 	}
 }
 
-func buildAltsPortResult(port altsPort, recv reflect.Value, recvOK bool) (types.Value, types.Value) {
+func buildAltsPortResult(port altsPort, recv reflect.Value, recvOK bool) (types.Value, error) {
 	switch port.kind {
 	case altsPortSend:
 		return makeAltsResult(atom.True, port.ch), nil
@@ -410,7 +448,7 @@ func buildAltsPortResult(port altsPort, recv reflect.Value, recvOK bool) (types.
 	}
 }
 
-func safeReflectSelect(cases []reflect.SelectCase) (selectedIdx int, recv reflect.Value, recvOK bool, errVal types.Value) {
+func safeReflectSelect(cases []reflect.SelectCase) (selectedIdx int, recv reflect.Value, recvOK bool, errVal error) {
 	defer func() {
 		if r := recover(); r != nil {
 			msg := fmt.Sprintf("%v", r)
