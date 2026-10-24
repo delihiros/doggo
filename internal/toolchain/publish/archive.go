@@ -3,6 +3,8 @@ package publish
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -150,45 +152,84 @@ func createPublishArchive(projectRoot, pkgName, version string) (string, error) 
 	fileName := fmt.Sprintf("%s-%s.tgz", sanitizePackageName(pkgName), sanitizePackageName(version))
 	archivePath := filepath.Join(outputDir, fileName)
 
-	outFile, err := os.Create(archivePath)
+	// Build beside the destination so failures cannot truncate a previous
+	// archive or follow an output symlink to an unrelated file.
+	outFile, err := createPublishTemp(outputDir, fileName)
 	if err != nil {
 		return "", err
 	}
-	defer outFile.Close()
+	defer os.Remove(outFile.Name())
+	if err := func() (retErr error) {
+		defer func() { retErr = errors.Join(retErr, outFile.Close()) }()
+		if info, err := os.Lstat(archivePath); err == nil && info.Mode().IsRegular() {
+			// Replacing a regular archive preserves its permissions, as the
+			// previous in-place write did. Never copy a symlink target's mode.
+			if err := outFile.Chmod(info.Mode().Perm()); err != nil {
+				return err
+			}
+		} else if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err := writePublishArchive(projectRoot, files, outFile); err != nil {
+			return err
+		}
+		return outFile.Sync()
+	}(); err != nil {
+		return "", err
+	}
+	if err := os.Rename(outFile.Name(), archivePath); err != nil {
+		return "", err
+	}
+	return archivePath, nil
+}
 
-	gw := gzip.NewWriter(outFile)
-	defer gw.Close()
+func createPublishTemp(outputDir, fileName string) (*os.File, error) {
+	for {
+		name := filepath.Join(outputDir, "."+fileName+".tmp-"+rand.Text())
+		// O_EXCL prevents following an existing entry. Mode 0666 lets the
+		// caller's umask restrict a new artifact just as os.Create did.
+		file, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0666)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		return file, err
+	}
+}
+
+func writePublishArchive(projectRoot string, files []string, output io.Writer) (retErr error) {
+	gw := gzip.NewWriter(output)
 	tw := tar.NewWriter(gw)
-	defer tw.Close()
+	// Closing tar emits its end markers; closing gzip flushes compressed bytes
+	// and its checksum. Both must succeed before the archive can be published.
+	defer func() { retErr = errors.Join(retErr, tw.Close(), gw.Close()) }()
 
 	for _, rel := range files {
 		abs := filepath.Join(projectRoot, filepath.FromSlash(rel))
 		info, err := os.Lstat(abs)
 		if err != nil {
-			return "", err
+			return err
 		}
 		if !info.Mode().IsRegular() {
 			continue
 		}
 		hdr, err := tar.FileInfoHeader(info, "")
 		if err != nil {
-			return "", err
+			return err
 		}
 		hdr.Name = rel
 		if err := tw.WriteHeader(hdr); err != nil {
-			return "", err
+			return err
 		}
 		f, err := os.Open(abs)
 		if err != nil {
-			return "", err
+			return err
 		}
-		if _, err := io.Copy(tw, f); err != nil {
-			f.Close()
-			return "", err
+		_, copyErr := io.Copy(tw, f)
+		if err := errors.Join(copyErr, f.Close()); err != nil {
+			return err
 		}
-		f.Close()
 	}
-	return archivePath, nil
+	return nil
 }
 
 func collectPublishFiles(projectRoot string) ([]string, error) {
