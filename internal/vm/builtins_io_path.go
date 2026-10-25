@@ -1034,7 +1034,11 @@ func ioCopyOrMoveTree(src, dst string, overwrite, ignoreMissing, move bool) erro
 	}
 
 	if srcInfo.IsDir() {
-		if ioPathIsSameOrDescendant(src, dst) {
+		recursiveDestination, err := ioPathIsSameOrDescendant(src, dst)
+		if err != nil {
+			return err
+		}
+		if recursiveDestination {
 			return ioRecursiveDestinationError(src, dst)
 		}
 		return ioCopyOrMoveDir(src, srcInfo, dst, dstExists, dstInfo, overwrite, move)
@@ -1057,7 +1061,13 @@ func ioCopyOrMoveFile(src string, srcInfo os.FileInfo, dst string, dstExists boo
 		finalExists = exists
 	}
 
-	if ioPathsEquivalent(src, finalDst) {
+	samePath, err := ioPathsEquivalent(src, finalDst)
+	if err != nil {
+		return err
+	}
+	// Lstat identity also recognizes hardlinks and host path aliases without
+	// following a terminal destination symlink that overwrite would replace.
+	if samePath || (finalExists && os.SameFile(srcInfo, finalInfo)) {
 		return ioSamePathError(src)
 	}
 
@@ -1165,22 +1175,73 @@ func ioLstatOptional(path string) (os.FileInfo, bool, error) {
 	return info, true, nil
 }
 
-func ioPathsEquivalent(a, b string) bool {
-	return ioHostPath(a) == ioHostPath(b)
+func ioPathsEquivalent(a, b string) (bool, error) {
+	absA, err := filepath.Abs(a)
+	if err != nil {
+		return false, err
+	}
+	absB, err := filepath.Abs(b)
+	if err != nil {
+		return false, err
+	}
+	return absA == absB, nil
 }
 
-func ioPathIsSameOrDescendant(root, candidate string) bool {
-	rel, err := filepath.Rel(ioHostPath(root), ioHostPath(candidate))
+func ioPathIsSameOrDescendant(root, candidate string) (bool, error) {
+	absRoot, err := filepath.Abs(root)
 	if err != nil {
-		return false
+		return false, err
 	}
-	if rel == "." {
-		return true
+	absCandidate, err := filepath.Abs(candidate)
+	if err != nil {
+		return false, err
 	}
-	if rel == ".." {
-		return false
+	if rel, err := filepath.Rel(absRoot, absCandidate); err == nil &&
+		rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return true, nil
 	}
-	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	rootInfo, err := os.Lstat(absRoot)
+	if err != nil {
+		return false, err
+	}
+	candidateInfo, exists, err := ioLstatOptional(absCandidate)
+	if err != nil {
+		return false, err
+	}
+	if exists && os.SameFile(rootInfo, candidateInfo) {
+		return true, nil
+	}
+	// Resolve only the nearest existing parent, preserving the terminal
+	// destination symlink policy. Its physical ancestry can include root
+	// even when its lexical ancestry does not, as with an external alias
+	// pointing to a proper descendant of root.
+	parent := filepath.Dir(absCandidate)
+	for {
+		_, err := os.Lstat(parent)
+		if err == nil {
+			parent, err = filepath.EvalSymlinks(parent)
+			if err != nil {
+				return false, err
+			}
+			break
+		}
+		if !os.IsNotExist(err) || filepath.Dir(parent) == parent {
+			return false, err
+		}
+		parent = filepath.Dir(parent)
+	}
+	for ; ; parent = filepath.Dir(parent) {
+		info, err := os.Stat(parent)
+		if err != nil {
+			return false, err
+		}
+		if os.SameFile(rootInfo, info) {
+			return true, nil
+		}
+		if filepath.Dir(parent) == parent {
+			return false, nil
+		}
+	}
 }
 
 func ioSamePathError(path string) error {
