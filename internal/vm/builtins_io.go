@@ -225,16 +225,8 @@ func prStr(v types.Value) string {
 		return textutil.QuoteDoggoString(string(val))
 	case atom.Keyword:
 		return val.String()
-	case *atom.Number:
-		text := val.String()
-		if val.IntVal == nil && val.FloatVal != nil &&
-			!math.IsInf(*val.FloatVal, 0) && !math.IsNaN(*val.FloatVal) &&
-			!strings.ContainsAny(text, ".eE") {
-			return text + ".0"
-		}
-		return text
 	case types.Number:
-		return val.String()
+		return readableNumberString(val)
 	case *coll.Vector:
 		if val == nil {
 			return "[]"
@@ -267,6 +259,18 @@ func prStr(v types.Value) string {
 	default:
 		return val.String()
 	}
+}
+
+// readableNumberString preserves finite float kinds without changing human-facing String output.
+func readableNumberString(value types.Number) string {
+	text := value.String()
+	if number, ok := value.(*atom.Number); ok &&
+		number.IntVal == nil && number.FloatVal != nil &&
+		!math.IsInf(*number.FloatVal, 0) && !math.IsNaN(*number.FloatVal) &&
+		!strings.ContainsAny(text, ".eE") {
+		return text + ".0"
+	}
+	return text
 }
 
 func prStrItems(items []types.Value, open, close string) string {

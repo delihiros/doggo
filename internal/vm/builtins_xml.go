@@ -300,30 +300,33 @@ func xmlDoggoToNode(value types.Value) (*xmlNode, error) {
 }
 
 func xmlNamedValue(value types.Value) (string, error) {
+	var name string
 	switch v := value.(type) {
 	case atom.Keyword:
-		return string(v), nil
+		name = string(v)
 	case atom.String:
-		return string(v), nil
+		name = string(v)
 	case types.Symbol:
-		return string(v), nil
+		name = string(v)
 	case *types.SymbolWithMeta:
-		return v.Name, nil
+		if v != nil {
+			name = v.Name
+		}
 	default:
-		return "", fmt.Errorf("must be keyword, symbol, or string, got %s", value.Type())
+		return "", fmt.Errorf("must be keyword, symbol, or string, got %s", valueTypeName(value))
 	}
+	if !xmlValidName(name) {
+		return "", fmt.Errorf("must be a valid XML name, got %q", name)
+	}
+	return name, nil
 }
 
 func xmlTagName(value types.Value) (string, error) {
-	switch v := value.(type) {
-	case atom.Keyword:
-		return string(v), nil
-	case types.Symbol:
-		return string(v), nil
-	case *types.SymbolWithMeta:
-		return v.Name, nil
+	switch value.(type) {
+	case atom.Keyword, types.Symbol, *types.SymbolWithMeta:
+		return xmlNamedValue(value)
 	default:
-		return "", fmt.Errorf("must be keyword or symbol, got %s", value.Type())
+		return "", fmt.Errorf("must be keyword or symbol, got %s", valueTypeName(value))
 	}
 }
 

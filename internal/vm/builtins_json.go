@@ -473,6 +473,9 @@ func jsonFromDoggoMap(value types.Map) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
+		if _, exists := result[keyString]; exists {
+			return nil, jsonInvalidArg("doggo.json/write-string", "JSON object key collision after string conversion: %q", keyString)
+		}
 		converted, err := jsonFromDoggoValue(value.Get(key))
 		if err != nil {
 			return nil, err
