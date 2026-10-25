@@ -105,7 +105,10 @@ func (v *Vector) Conj(item types.Value) types.Value {
 	if v == nil {
 		return NewVector(item)
 	}
-	return NewVector(append(v.Items, item)...)
+	// Own the result storage before appending so retained vectors and views stay unchanged.
+	newItems := make([]types.Value, len(v.Items), len(v.Items)+1)
+	copy(newItems, v.Items)
+	return NewVector(append(newItems, item)...)
 }
 
 // Seq はベクターをシーケンスに変換します。

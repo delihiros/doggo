@@ -230,7 +230,7 @@ func ednNumberString(value types.Number) string {
 			return "##-Inf"
 		}
 	}
-	return value.String()
+	return readableNumberString(value)
 }
 
 func validateEDNValue(v types.Value) error {

@@ -80,11 +80,19 @@ func (a *Agent) Send(ctx context.Context, fn ActionFn, args []types.Value) error
 	if err := a.CheckSendable(); err != nil {
 		return err
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
 	case a.actionCh <- newAction(ctx, fn, args):
 		return nil
 	case <-a.ctx.Done():
 		return ErrAgentClosed
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
