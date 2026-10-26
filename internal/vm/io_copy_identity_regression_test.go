@@ -10,6 +10,8 @@ import (
 )
 
 func TestIOCopyMoveRejectSameFileIdentity(t *testing.T) {
+	// Windows CI can place the package and TempDir on different volumes.
+	t.Chdir(t.TempDir())
 	for _, operation := range []string{"copy-tree", "move"} {
 		for _, spelling := range []string{"same path", "relative source", "relative destination", "parent destination", "relative parent destination", "hardlink", "case alias", "ancestor alias"} {
 			t.Run(operation+"/"+spelling, func(t *testing.T) {
@@ -55,6 +57,7 @@ func TestIOCopyMoveRejectSameFileIdentity(t *testing.T) {
 }
 
 func TestIOCopyMoveRejectSameDirectoryIdentity(t *testing.T) {
+	t.Chdir(t.TempDir())
 	for _, operation := range []string{"copy-tree", "move"} {
 		for _, spelling := range []string{"same path", "relative source", "relative destination", "case alias", "ancestor alias"} {
 			t.Run(operation+"/"+spelling, func(t *testing.T) {
@@ -90,6 +93,7 @@ func TestIOCopyMoveRejectSameDirectoryIdentity(t *testing.T) {
 }
 
 func TestIOCopyMoveRejectDescendantAliases(t *testing.T) {
+	t.Chdir(t.TempDir())
 	for _, operation := range []string{"copy-tree", "move"} {
 		for _, spelling := range []string{"relative source", "relative destination", "ancestor alias"} {
 			t.Run(operation+"/"+spelling, func(t *testing.T) {
@@ -195,6 +199,7 @@ func TestIORejectMissingPhysicalDescendantAlias(t *testing.T) {
 }
 
 func TestIOCopyMoveDistinctFiles(t *testing.T) {
+	t.Chdir(t.TempDir())
 	for _, operation := range []string{"copy-tree", "move"} {
 		for _, shape := range []string{"missing destination", "overwrite", "existing directory", "collision"} {
 			t.Run(operation+"/"+shape, func(t *testing.T) {
