@@ -255,6 +255,7 @@ func xmlDoggoToNode(value types.Value) (*xmlNode, error) {
 		if !ok && attrSeqValue != nil {
 			return nil, xmlInvalidArg("doggo.xml/write-string", "field :attrs must be seqable")
 		}
+		seenNames := make(map[string]struct{})
 		for attrSeq != nil {
 			entryValue := attrSeq.First()
 			entry, ok := entryValue.(*types.MapEntry)
@@ -265,7 +266,15 @@ func xmlDoggoToNode(value types.Value) (*xmlNode, error) {
 			if err != nil {
 				return nil, xmlInvalidArg("doggo.xml/write-string", "attribute key %v", err)
 			}
-			node.attrs = append(node.attrs, xmlAttr{name: name, value: valueToString(entry.Value)})
+			if _, duplicate := seenNames[name]; duplicate {
+				return nil, xmlInvalidArg("doggo.xml/write-string", "duplicate attribute name %q", name)
+			}
+			seenNames[name] = struct{}{}
+			attrValue := valueToString(entry.Value)
+			if !xmlValidChars(attrValue) {
+				return nil, xmlInvalidArg("doggo.xml/write-string", "attribute value for %q must contain only valid UTF-8 XML characters", name)
+			}
+			node.attrs = append(node.attrs, xmlAttr{name: name, value: attrValue})
 			attrSeq = attrSeq.Next()
 		}
 		sort.Slice(node.attrs, func(i, j int) bool {
@@ -285,6 +294,9 @@ func xmlDoggoToNode(value types.Value) (*xmlNode, error) {
 			}
 			item := seq.First()
 			if text, ok := item.(atom.String); ok {
+				if !xmlValidChars(string(text)) {
+					return nil, xmlInvalidArg("doggo.xml/write-string", "field :content text must contain only valid UTF-8 XML characters")
+				}
 				node.content = append(node.content, xmlContent{text: string(text)})
 				continue
 			}

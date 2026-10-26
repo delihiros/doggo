@@ -26,6 +26,10 @@ type blockingDeref interface {
 	Deref() types.Value
 }
 
+type contextDeref interface {
+	DerefContext(context.Context) (types.Value, error)
+}
+
 type processExitRef struct {
 	done  chan struct{}
 	once  sync.Once
@@ -49,6 +53,21 @@ func (r *processExitRef) fulfill(value types.Value) {
 func (r *processExitRef) Deref() types.Value {
 	<-r.done
 	return r.valueOrNil()
+}
+
+func (r *processExitRef) DerefContext(ctx context.Context) (types.Value, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-r.done:
+		return r.valueOrNil(), nil
+	}
 }
 
 func (r *processExitRef) valueOrNil() types.Value {

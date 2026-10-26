@@ -77,11 +77,21 @@ var builtinsAtom = []BuiltinDefinition{
 			}
 			// Channelの場合
 			if ch, ok := args[0].(*types.Channel); ok {
-				val, ok := ch.Receive()
-				if !ok {
-					return atom.NilValue, nil
+				if ctx == nil {
+					ctx = context.Background()
 				}
-				return val, nil
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case val, ok := <-ch.Value:
+					if !ok {
+						return atom.NilValue, nil
+					}
+					return val, nil
+				}
 			}
 			// Refの場合（STM）
 			if ref, ok := args[0].(*stm.Ref); ok {
@@ -96,6 +106,9 @@ var builtinsAtom = []BuiltinDefinition{
 			}
 			// GoObject経由の blocking deref（process exit-ref など）
 			if goObj, ok := args[0].(*atom.GoObject); ok {
+				if derefable, ok := goObj.Unwrap().(contextDeref); ok {
+					return derefable.DerefContext(ctx)
+				}
 				if derefable, ok := goObj.Unwrap().(blockingDeref); ok {
 					return derefable.Deref(), nil
 				}

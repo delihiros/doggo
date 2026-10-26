@@ -346,7 +346,7 @@ $ doggo exec -- example.dog
 | `chan?` | `x` | チャネルなら真偽値 | なし |
 | `close!` | チャネル `ch` | `nil` | チャネルを閉じる。再度閉じる、型不正はエラー |
 | `compare-and-set!` | `atom old new` | 更新できたかの真偽値 | Atom を条件付き更新。監視関数のエラーを返すことがある |
-| `deref` | Atom・Future・チャネル・Ref・Agent・対応する Go 値・Var `x` | 保持値または受信値 | Future・チャネルなどでは待機。対応しない値はエラー |
+| `deref` | Atom・Future・チャネル・Ref・Agent・対応する Go 値・Var `x` | 保持値または受信値 | Future・チャネル・プロセス終了参照などでは待機し、実行コンテキストのキャンセル・期限切れで待機を中止してエラーにする。対応しない値はエラー |
 | `ensure` | Ref `r` | 現在値 | `dosync` 内で参照値を読み取り保護。外部・型不正はエラー |
 | `future-call` | 0 引数関数 `f` | Future | `f` を別の goroutine で実行 |
 | `persistent!` | 一時マップ `m` | 永続マップ | 一時マップを無効化。所有する論理実行の違反、再実行はエラー |
