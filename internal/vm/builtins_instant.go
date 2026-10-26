@@ -13,6 +13,7 @@ import (
 )
 
 var instantTimestampPattern = regexp.MustCompile(`^(\d{4})(?:-(\d{2})(?:-(\d{2})(?:T(\d{2})(?::(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?(?:([+-])(\d{2}):(\d{2})|Z)?)?)?)?$`)
+var instantMapTimestampPattern = regexp.MustCompile(`^(-?\d{4,})(?:-(\d{2})(?:-(\d{2})(?:T(\d{2})(?::(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?(?:([+-])(\d{2}):(\d{2})|Z)?)?)?)?$`)
 
 const instantMaxRFC3339OffsetSeconds = 23*60*60 + 59*60
 
@@ -49,7 +50,15 @@ func instantDaysInMonth(year, month int) int {
 }
 
 func parseTimestampValue(input string) (time.Time, int, error) {
-	matches := instantTimestampPattern.FindStringSubmatch(input)
+	return parseTimestampComponents(input, instantTimestampPattern)
+}
+
+func parseInstantTimestampValue(input string) (time.Time, int, error) {
+	return parseTimestampComponents(input, instantMapTimestampPattern)
+}
+
+func parseTimestampComponents(input string, pattern *regexp.Regexp) (time.Time, int, error) {
+	matches := pattern.FindStringSubmatch(input)
 	if matches == nil {
 		return time.Time{}, 0, instantInvalidTimestamp(input)
 	}
@@ -186,7 +195,7 @@ func formatTimestampResult(arg types.Value) (types.Value, error) {
 		return nil, err
 	}
 
-	parsed, _, parseErr := parseTimestampValue(instantString)
+	parsed, _, parseErr := parseInstantTimestampValue(instantString)
 	if parseErr != nil {
 		return nil, argumentVMError(function, "instant", "valid instant value", arg, parseErr.Error())
 	}
