@@ -795,7 +795,7 @@ var builtinsCollExtraCtx = []BuiltinDefinition{
 			if !ok {
 				return newArgumentError("partition: first argument must be a number, got %s", args[0].Type())
 			}
-			n := int(nValue)
+			n := nValue
 			if n <= 0 {
 				return newArgumentError("partition: n must be positive")
 			}
@@ -807,7 +807,7 @@ var builtinsCollExtraCtx = []BuiltinDefinition{
 				if !ok {
 					return newArgumentError("partition: step must be a number, got %s", args[1].Type())
 				}
-				step = int(stepValue)
+				step = stepValue
 				if step <= 0 {
 					return newArgumentError("partition: step must be positive")
 				}
@@ -823,9 +823,18 @@ var builtinsCollExtraCtx = []BuiltinDefinition{
 			}
 
 			result := make([]types.Value, 0)
-			for i := 0; i+n <= len(items); i += step {
-				chunk := coll.NewList(items[i : i+n]...)
+			for i := 0; i < len(items); {
+				remaining := len(items) - i
+				// Bound n before converting to int or adding to the index.
+				if n > int64(remaining) {
+					break
+				}
+				chunk := coll.NewList(items[i : i+int(n)]...)
 				result = append(result, chunk)
+				if step >= int64(remaining) {
+					break
+				}
+				i += int(step)
 			}
 			return coll.NewList(result...)
 		}},
@@ -844,7 +853,7 @@ var builtinsCollExtraCtx = []BuiltinDefinition{
 			if !ok {
 				return newArgumentError("partition-all: first argument must be a number, got %s", args[0].Type())
 			}
-			n := int(nValue)
+			n := nValue
 			if n <= 0 {
 				return newArgumentError("partition-all: n must be positive")
 			}
@@ -856,7 +865,7 @@ var builtinsCollExtraCtx = []BuiltinDefinition{
 				if !ok {
 					return newArgumentError("partition-all: step must be a number, got %s", args[1].Type())
 				}
-				step = int(stepValue)
+				step = stepValue
 				if step <= 0 {
 					return newArgumentError("partition-all: step must be positive")
 				}
@@ -872,13 +881,19 @@ var builtinsCollExtraCtx = []BuiltinDefinition{
 			}
 
 			result := make([]types.Value, 0)
-			for i := 0; i < len(items); i += step {
-				end := i + n
-				if end > len(items) {
-					end = len(items)
+			for i := 0; i < len(items); {
+				remaining := len(items) - i
+				chunkSize := remaining
+				// Clamp n before converting to int or adding to the index.
+				if n < int64(chunkSize) {
+					chunkSize = int(n)
 				}
-				chunk := coll.NewList(items[i:end]...)
+				chunk := coll.NewList(items[i : i+chunkSize]...)
 				result = append(result, chunk)
+				if step >= int64(remaining) {
+					break
+				}
+				i += int(step)
 			}
 			return coll.NewList(result...)
 		}},
@@ -976,55 +991,53 @@ var builtinsCollExtraCtx = []BuiltinDefinition{
 
 // assocInRecursive はネストしたマップに値を設定する再帰ヘルパーです。
 func assocInRecursive(m types.Value, keys []types.Value, val types.Value) types.Value {
+	var mapVal *coll.Map
+	if m == nil || m == atom.NilValue {
+		mapVal = coll.NewEmptyMap()
+	} else {
+		var ok bool
+		mapVal, ok = m.(*coll.Map)
+		if !ok {
+			return newArgumentError("assoc-in: expected map or nil, got %s", m.Type())
+		}
+	}
+
 	if len(keys) == 1 {
 		// 最後のキー: 値を設定
-		if m == nil || m == atom.NilValue {
-			return coll.NewEmptyMap().Assoc(keys[0], val)
-		}
-		if mapVal, ok := m.(*coll.Map); ok {
-			return mapVal.Assoc(keys[0], val)
-		}
-		return coll.NewEmptyMap().Assoc(keys[0], val)
+		return mapVal.Assoc(keys[0], val)
 	}
 
 	// 中間キー: 再帰的に更新
 	key := keys[0]
 	rest := keys[1:]
 
-	var inner types.Value = atom.NilValue
-	if m != nil && m != atom.NilValue {
-		if mapVal, ok := m.(*coll.Map); ok {
-			val := mapVal.Get(key)
-			if val != nil {
-				inner = val
-			}
-		}
-	}
-
+	inner := mapVal.Get(key)
 	newInner := assocInRecursive(inner, rest, val)
-
-	if m == nil || m == atom.NilValue {
-		return coll.NewEmptyMap().Assoc(key, newInner)
+	if err, ok := newInner.(*Error); ok {
+		return err
 	}
-	if mapVal, ok := m.(*coll.Map); ok {
-		return mapVal.Assoc(key, newInner)
-	}
-	return coll.NewEmptyMap().Assoc(key, newInner)
+	return mapVal.Assoc(key, newInner)
 }
 
 // updateInRecursive はネストしたマップの値を関数で更新する再帰ヘルパーです。
 func updateInRecursive(ctx context.Context, vm *VM, m types.Value, keys []types.Value, fn types.Value, extraArgs []types.Value) (types.Value, error) {
+	var mapVal *coll.Map
+	if m == nil || m == atom.NilValue {
+		mapVal = coll.NewEmptyMap()
+	} else {
+		var ok bool
+		mapVal, ok = m.(*coll.Map)
+		if !ok {
+			return nil, newArgumentError("update-in: expected map or nil, got %s", m.Type())
+		}
+	}
+
 	if len(keys) == 1 {
 		// 最後のキー: 関数を適用
 		key := keys[0]
 		var currentVal types.Value = atom.NilValue
-		if m != nil && m != atom.NilValue {
-			if mapVal, ok := m.(*coll.Map); ok {
-				val := mapVal.Get(key)
-				if val != nil {
-					currentVal = val
-				}
-			}
+		if val := mapVal.Get(key); val != nil {
+			currentVal = val
 		}
 
 		fnArgs := make([]types.Value, 0, 1+len(extraArgs))
@@ -1036,41 +1049,20 @@ func updateInRecursive(ctx context.Context, vm *VM, m types.Value, keys []types.
 			return nil, err
 		}
 
-		if m == nil || m == atom.NilValue {
-			return coll.NewEmptyMap().Assoc(key, newVal), nil
-		}
-		if mapVal, ok := m.(*coll.Map); ok {
-			return mapVal.Assoc(key, newVal), nil
-		}
-		return coll.NewEmptyMap().Assoc(key, newVal), nil
+		return mapVal.Assoc(key, newVal), nil
 	}
 
 	// 中間キー: 再帰的に更新
 	key := keys[0]
 	rest := keys[1:]
 
-	var inner types.Value = atom.NilValue
-	if m != nil && m != atom.NilValue {
-		if mapVal, ok := m.(*coll.Map); ok {
-			val := mapVal.Get(key)
-			if val != nil {
-				inner = val
-			}
-		}
-	}
-
+	inner := mapVal.Get(key)
 	newInner, err := updateInRecursive(ctx, vm, inner, rest, fn, extraArgs)
 	if err != nil {
 		return nil, err
 	}
 
-	if m == nil || m == atom.NilValue {
-		return coll.NewEmptyMap().Assoc(key, newInner), nil
-	}
-	if mapVal, ok := m.(*coll.Map); ok {
-		return mapVal.Assoc(key, newInner), nil
-	}
-	return coll.NewEmptyMap().Assoc(key, newInner), nil
+	return mapVal.Assoc(key, newInner), nil
 }
 
 // flattenRecursive はネストしたコレクションを再帰的に平坦化します。

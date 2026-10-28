@@ -113,7 +113,7 @@ func timeValidateInstantArg(function string, arg types.Value) (types.Map, error)
 	if !ok {
 		return nil, timeInvalidInstant(function, ":instant", arg)
 	}
-	parsedInstant, _, parseErr := parseTimestampValue(string(instantString))
+	parsedInstant, _, parseErr := parseInstantTimestampValue(string(instantString))
 	if parseErr != nil {
 		return nil, timeInvalidInstant(function, ":instant", arg)
 	}
@@ -130,7 +130,8 @@ func timeValidateInstantArg(function string, arg types.Value) (types.Map, error)
 	if errValue != nil {
 		return nil, timeInvalidInstant(function, ":epoch-millis", arg)
 	}
-	if parsedInstant.UTC().UnixMilli() != epochMillis {
+	// UnixMilli wraps outside the int64 range; compare the actual times instead.
+	if !parsedInstant.UTC().Truncate(stdtime.Millisecond).Equal(stdtime.UnixMilli(epochMillis)) {
 		return nil, timeInvalidInstant(function, ":epoch-millis", arg)
 	}
 
